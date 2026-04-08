@@ -1,0 +1,276 @@
+﻿cutii_sheet_row,cutii_name,excel_row,matched_pdf,score,match_via,qty_per_year,status
+5,"Enoxaparina-BP 2000 anti-Xa IU/0,2 ml N2 (Iraq)",327,"Enoxaparina-BP sol. inj. seringa preump 2000 UI_0,2ml N10 (SPM-213-01) 14.10.25 Red.3.pdf",64.40677966101694,name,25200,ok
+6,"Enoxaparina-BP 4000 anti-Xa IU/0,4 ml N2 (Iraq)",328,"Enoxaparina-BP sol. inj. seringa preump 4000 UI_0,4ml N10 (SPM-213-02) 14.10.25 Red.3.pdf",64.40677966101694,name,28200,ok
+7,"Lito-Nalin 300 mcg/0,3 ml N2",456,LITO-NALIN sol. inj. 300 mcg_0.3 ml N2 (SPM-510-01-48 Polonia) 16.05.25 Red.1.pdf,83.33333333333333,name,50500,ok
+8,"Enoxaparina-BP 2000 UI anti-Xa/0,2 ml N10",327,"Enoxaparina-BP sol. inj. seringa preump 2000 UI_0,2ml N10 (SPM-213-01) 14.10.25 Red.3.pdf",77.61194029850746,name,2300,ok
+9,"Enoxaparina-BP 4000 UI anti-Xa/0,4 ml N10",328,"Enoxaparina-BP sol. inj. seringa preump 4000 UI_0,4ml N10 (SPM-213-02) 14.10.25 Red.3.pdf",77.61194029850746,name,24300,ok
+10,"Enoxaparina-BP 8000 UI anti-Xa/0,8 ml N10",329,"Enoxaparina-BP sol. inj. seringa preump 8000 UI_0,8ml N10 (SPM-213-03) 14.10.25 Red.3.pdf",77.61194029850746,name,2200,ok
+11,Giatron 30 mg/2 ml N 1 (Camboja),,,48.275862068965516,pdf,,no_match
+13,Dipovix 2 mg+5mg 1 ml N 1,,,41.37931034482759,pdf,,no_match
+14,Kortipan susp.inj. 2 mg+5 mg/ml 1 ml N 1 (TJ),,,47.45762711864407,pdf,,no_match
+15,Kortipan susp.inj. 2 mg+5 mg/ml 1 ml N 1 (UZB),,,47.05882352941177,pdf,,no_match
+16,Vegaspan 2mg+5mg/ml 1 ml N 1 (export),,,45.16129032258065,pdf,,no_match
+17,"Betametazon-BP sol.inj 2,63 mg+6,43 mg 1 ml N 5",,,59.50413223140496,name,,ambiguous
+18,Alergostop new 20 mg/ml 1ml N10,46,Alergostop sol. inj. 20 mg_ml 1 ml N5x2 (BUM-011-01) 08.11.21 Red.3 .pdf,59.09090909090909,name,25200,ok
+19,"Cianocobalamin-BP sol.inj 0,5 mg/ml 1 ml N10",,,62.903225806451616,name,,ambiguous
+20,Dexametazon-BP sol.inj 4 mg/ml 1 ml N10,,,70.0,name,,ambiguous
+21,Dimedrol-BP sol.inj. 10 mg/ml 1 ml N10,299,Dimedrol-BP sol. inj. 10 mg_ml 1 ml N5x2 (ВУМ-169-01) 04.07.23 Red.3.pdf,77.41935483870968,name,98850,ok
+22,"Enalaprilat-BP sol.inj 1,25mg/ml 1 ml N10",323,"Enalaprilat-BP sol. inj. 1, 25 mg-ml 1 ml N10 (ВУМ-180-01) 18.08.23 Red.2.pdf",71.875,name,16600,ok
+23,Ipidacrina-BP sol. inj. 15 mg/ml 1 ml N10,,,69.0909090909091,name,,ambiguous
+24,Ipidacrina-BP sol. inj. 5 mg/ml 1 ml N10,,,67.88990825688074,name,,ambiguous
+25,Ketorolac-BP 30 mg/ml 1 ml N 10 (Iraq),444,Ketorolac-BP sol. inj. 30 mg_ml 1 ml N5x2 (SPM-454-01) 13.09.24 Red.1.pdf,78.43137254901961,name,11300,ok
+26,Ketorolac-BP sol.inj 30 mg/ml 1 ml N10,444,Ketorolac-BP sol. inj. 30 mg_ml 1 ml N5x2 (SPM-454-01) 13.09.24 Red.1.pdf,68.9655172413793,name,25900,ok
+27,Neurocrin sol.inj. 15 mg/ml 1 ml N 10,,,59.04761904761905,name,,ambiguous
+28,Neurocrin sol.inj. 5 mg/ml 1 ml N 10,,,57.69230769230769,name,,ambiguous
+29,Neurodax sol.inj. 15 mg/ml 1 ml N 10,,,57.69230769230769,name,,ambiguous
+30,Neurodax sol.inj. 5 mg/ml 1 ml N 10,,,57.69230769230769,name,,ambiguous
+31,Oxitocin-BP sol inj 5 UI/1ml N10,,,54.90196078431372,name,,ambiguous
+32,Piridoxin-BP sol.inj. 50 mg/ ml 1 ml N10 (Vit.B6),659,Piridoxin-BP sol. inj. 50 mg-ml 1 ml N10 (ВУМ-217-01) 07.12.21 Red.2.pdf,85.29411764705883,name,134350,ok
+33,Tiamin-BP sol.inj.50 mg/ml 1 ml N10 (Vitamin B1),,,57.142857142857146,name,,ambiguous
+34,Dexametasone Phosphate 4 mg/ml 1 ml N 25 (export),,,53.65853658536585,name,,ambiguous
+35,Dexametazon sol.inj 4 mg/ml 1 ml N 25 (export),,,66.66666666666666,name,,ambiguous
+36,Dexapain 25 mg/ml 2 ml N 5 (export),,,49.54128440366973,pdf,,no_match
+37,Relivian 500 mg/ml 2 ml N 5 (Spania),,,52.72727272727273,name,,ambiguous
+38,Tavestin sol.inj 1mg/ml 2 ml N 5,,,46.31578947368421,pdf,,no_match
+39,"Trilivia 500 mg+2mg+0,02mg/ml 2 ml N 5 (Spania)",,,46.28099173553719,pdf,,no_match
+40,Algodex sol.inj.25 mg/ml 2 ml N10,,,55.319148936170215,name,,ambiguous
+41,Analgin-BP sol.inj.500 mg/ml 2 ml N10,,,62.264150943396224,name,,ambiguous
+42,B-Complex Plus sol.inj. 2 ml N 10,129,B Complex Plus (B1_B6_B12) sol. inj. 2 ml N5x2 (SPM-230-02-372) 08.07.25 Red.3.pdf,59.57446808510638,name,66600,ok
+43,Clemastina-BP sol.inj 1mg/ml 2 ml N10,,,54.205607476635514,name,,ambiguous
+44,Clorura de sodiu-BP sol.inj 9mg/ml 2 ml N10,,,62.18487394957983,name,,ambiguous
+45,Dexametazon-BP sol.inj 4 mg/ml 2 ml N10,,,70.0,name,,ambiguous
+46,Furosemid-BP 10mg/ml 2 ml N10,,,73.91304347826087,name,,ambiguous
+47,Ketoprofen-BP sol.inj 100 mg/2 ml N10,,,60.37735849056604,name,,ambiguous
+48,"Meloxicam-BP 15 mg/1,5 ml N 10 (Iraq)",,,75.0,name,,ambiguous
+49,Meloxicam-BP sol.inj.10 mg/ml 1.5 ml N10,,,60.176991150442475,name,,ambiguous
+50,Ondansetron 4 mg/2 ml N 10 (export),,,51.61290322580645,name,,ambiguous
+51,Regimed 2 ml N 10 (KZ),,,58.333333333333336,name,,ambiguous
+52,Spasmoverin 40 mg/2ml N 10 (export),,,70.0,name,,ambiguous
+53,Vinpocetina-BP sol. inj. 5 mg/ml 2ml N10,678,Progesteron-BP sol. inj. 25 mg-ml 1ml_N10 (ВУМ-121-02) 25.02.19.pdf,64.07766990291262,name,40000,ok
+54,Drotaverin-BP 20mg/ml 2 ml N50,,,75.0,name,,ambiguous
+55,Ketoprofen-BP sol.inj 100 mg/2 ml N50 !!!,,,57.94392523364486,name,,ambiguous
+56,Bupivacain-BP sol.inj 5mg/ml 4 ml N5,169,Bupivacain-BP sol. inj. 5 mg_ml 4 ml N5 (ВУМ-029-02) 07.08.23 Red.2.pdf,73.6842105263158,name,12000,ok
+57,Citicolin-BP sol.inj 125 mg/ml 4 ml N 5,,,70.37037037037037,name,,ambiguous
+58,Diclofenac Sodium Eletis 75 mg/3 ml N 5  Lit,,,49.54128440366973,pdf,,no_match
+59,Diclofenac-BP sol.inj. 75 mg/3ml 3 ml N 5,,,77.61194029850746,name,,ambiguous
+60,Protacit 1000 mg/4ml N 5,,,40.54054054054054,pdf,,no_match
+61,AlgoSpazmin sol.inj. 5 ml N 10,,,82.35294117647058,name,,ambiguous
+62,Amiodaron-BP sol.inj.150 mg/3ml 3 ml N10,,,57.94392523364486,name,,ambiguous
+63,Amiodaron-BP sol.inj.150 mg/3ml 3 ml N10 (export),,,60.3448275862069,name,,ambiguous
+64,Apa pt injectii 5 ml N10,101,Apa pentru injecții 5 ml N10 (ВУМ-161-03-373) 22.05.23 Red.2.pdf,66.66666666666666,name,38900,ok
+65,Clorura de sodiu-BP sol.inj 9mg/ml 5 ml N10,,,62.18487394957983,name,,ambiguous
+66,Lacetam sol.inj. 200 mg/ml 5 ml N 10,,,57.42574257425743,name,,ambiguous
+67,Nootrovega sol.inj. 200 mg/ml 5 ml N10,,,56.60377358490566,name,,ambiguous
+68,Ondansetron-BP 2 mg/ml 4 ml N 10 (Iraq),,,79.24528301886792,name,,ambiguous
+69,Ondansetron-BP sol.inj. 2mg/ml 4ml N 10,,,68.51851851851852,name,,ambiguous
+70,Piracetam-BP sol.inj. 200 mg/5 ml N10,,,78.68852459016394,name,,ambiguous
+71,Sulfat de magneziu-BP sol. inj. 250 mg/ml 5 ml N10,,,93.61702127659575,name,,ambiguous
+72,Vinpocetina-BP sol. inj. 5 mg/ml 5ml N10,,,60.19417475728155,name,,ambiguous
+73,Diclofenac Sodium Eletis 75 mg/3 ml N 25  Lit,,,50.90909090909091,name,,ambiguous
+74,Sulfat de Magneziu-BP sol. inj. 250 mg/ml 5 ml N50,,,93.61702127659575,name,,ambiguous
+76,"Articain-Vega 1:100000 1,7 ml N 60",,,44.85981308411215,pdf,,no_match
+77,"Articain-Vega 1:200000 1,7 ml N 60",,,42.99065420560748,pdf,,no_match
+78,"BP Anest 1:100000 1,7 ml N 60",,,46.15384615384615,pdf,,no_match
+79,"BP Anest 1:200000 1,7 ml N 60",,,43.58974358974359,pdf,,no_match
+81,Fluconazol-BP caps. 150 mg N 2,,,80.0,name,,ambiguous
+82,Fluconazol-BP caps. 150 mg N10,,,88.88888888888889,name,,ambiguous
+83,Hepaurs caps. 300 mg N 20 (export),,,71.7948717948718,name,,ambiguous
+84,Krenorm caps. 10000 UI N 20,,,46.15384615384615,pdf,,no_match
+85,Krenorm caps. 25000 UI N 20,,,47.61904761904762,pdf,,no_match
+86,Pro-Digestiv caps. 10000 UA N20,,,60.674157303370784,name,,ambiguous
+87,Acetilcistein-BP caps. 200 mg N30,16,Acetilcistein-BP capsule 200 mg N10x3 (ВУМ-003-01) 21.02.22 Red.3.pdf,82.14285714285714,name,16000,ok
+88,Aciclovir-BP caps.200 mg N30,19,Aciclovir-BP capsule 200 mg N30 (ВУМ-004-02) 11.10.19 Red. 2.pdf,80.85106382978724,name,35900,ok
+89,B Complex caps. N 30,,,62.06896551724138,name,,ambiguous
+90,Dermalight Formula caps. N 30 (FULLAB),,,40.42553191489362,pdf,,no_match
+91,Gastrigen-Pro caps. 10000 N 30 (UA),,,48.421052631578945,pdf,,no_match
+92,Gastrigen-Pro caps. 25000 N 30 (UA),,,47.31182795698925,pdf,,no_match
+93,ImunoSuport BP caps. N 30,417,ImunoSuport BP caps. N30 (SPM-489-01-373) 18.03.25 Red.1.pdf,88.88888888888889,name,12500,ok
+94,Joint Support Ultra Easy Take caps. N 30,437,JOINT SUPPORT Easy Take capsule N10x3 (SPM-408-02-373) 12.01.26 Red.2.pdf,73.01587301587301,name,7600,ok
+95,Liver Formula caps. N 30 (FULLAB),,,40.50632911392405,pdf,,no_match
+96,OptiVit BP caps. N30+N30,616,OptiVit BP Essential caps. tari bp N60(30+30) (SPM-483-01-373) 27.01.25 Red.1.pdf,80.0,name,24750,ok
+97,Silimarin-BP caps. 140 mg N 30,,,63.829787234042556,name,,ambiguous
+98,Silimarin-BP caps. 150 mg N 30,,,63.829787234042556,name,,ambiguous
+99,Skin Detox Formula caps. N 30 (FULLAB),,,42.5531914893617,pdf,,no_match
+100,Antioxidant Formula caps. N 60 (FULLAB),,,42.5531914893617,pdf,,no_match
+101,ApplePect Sorbent caps. N 60,110,ApplePect Sorbent capsule N60 (ВУМ-406-01-373) 19.10.23 Red.1.pdf,75.55555555555556,name,5400,ok
+102,Berberine + Chromium caps. N 60,141,Berberine+Chromium caps. 500mg+40mcg N60 (SPM-456-02-373) 05.03.26 Red. 2.pdf,55.76923076923077,name,25150,ok
+103,Hair Formula Men caps. N 60 (FULLAB),,,40.86021505376344,pdf,,no_match
+104,Hair Formula Women caps. N 60 (FULLAB),,,43.75,pdf,,no_match
+105,Hepaurs caps. 150 mg N60,,,73.6842105263158,name,,ambiguous
+106,Hepaurs caps. 250 mg N60,,,73.6842105263158,name,,ambiguous
+107,Hepaurs caps. 300 mg N60,,,73.6842105263158,name,,ambiguous
+108,Hidroxicarbamid-BP caps. 500 mg N60,406,Hidroxicarbamid_BP caps 500mg N60_(ВУМ-067-01) 20.02.23 Red.3.pdf,60.416666666666664,name,7350,ok
+109,NMN BP caps. 300 mg N 60,,,70.27027027027027,name,,ambiguous
+110,Potassium+Magnesium caps. N 60,661,Potassium+Magnesium caps N10x6 (SPM-496-02) 19.03.25 Red.1.pdf,77.55102040816327,name,6700,ok
+111,Resveratrol-BP caps. N 60,693,Resveratrol BP caps. N10x6 (SPM-490-02-373) 03.04.25 Red.1.pdf,50.602409638554214,name,5200,ok
+112,Zinc Magnezium Active (ZMA) caps. N 60,,,45.87155963302752,pdf,,no_match
+113,LustOn Women caps. N 90,499,LustOn Women capsule N10x9 (SPM-464-01-373) 16.05.25 Red.1.pdf,68.57142857142857,name,6300,ok
+114,DMAE BP caps. N120,279,DMAE BP capsule 250 mg N120 (SPM-491-03) 23.06.25 Red.1.pdf,80.0,name,2050,ok
+115,L-Arginine + L-Citrulline caps. N 120,445,L-Arginine+L-Citrulline capsule 250 mg_250 mg N120_(SPM-444-03) 28.10.24 Red.1.pdf,61.111111111111114,name,5500,ok
+116,Spirulin BP caps. N 120,762,Spirulin BP capsule 750 mg N120 (ВУМ-404-04) 04.12.23 Red.1.pdf,64.70588235294117,name,5500,ok
+118,Omega-3 BP Essential caps. N30,597,Omega-3 BP Essential caps. moi. N10x3 (SMP-060-01)15.12.25 Red.3.pdf,92.85714285714286,name,31700,ok
+119,Omega-3 BP Ultra caps. N30,602,Omega-3 BP ULTRA caps. moi gelatin N30 (ВУМ-365-01-373_40) 28.04.23 Red.1.pdf,100.0,name,7000,ok
+120,Calcium + Vitamina D3 caps. N30,842,Vitamina D3 caps. moi 2500 UI N15x2 (SPM-068-01-373) 12.01.26 Red.4.pdf,70.83333333333333,name,16500,ok
+121,Vitamina D3 + Vit.E caps. N 30,842,Vitamina D3 caps. moi 2500 UI N15x2 (SPM-068-01-373) 12.01.26 Red.4.pdf,72.34042553191489,name,12000,ok
+122,Vitamina D3 caps. 2500 UI N 30,842,Vitamina D3 caps. moi 2500 UI N15x2 (SPM-068-01-373) 12.01.26 Red.4.pdf,90.9090909090909,name,34000,ok
+123,Vitamina D3+K2 caps. N 30,845,Vitamina D3+K2 caps. moi 2000 UI+50 mcg N15x2 (SMP-410-01) 15.12.25 Red.2.pdf,88.88888888888889,name,19500,ok
+124,D3Plan 5000 IU caps. N 60,,,42.10526315789474,pdf,,no_match
+125,"Vireta caps. 228 g, N 120",827,Vireta_caps. moi. N120_(SPM-248-03-373) 15.01.25 Red.2.pdf,64.86486486486487,name,2300,ok
+127,"Cabergolin-BP comp. 0,5 mg N 2",,,92.85714285714286,name,,ambiguous
+128,Esculap comp.film. 20 mg N 4 (UZ),,,53.608247422680414,name,,ambiguous
+129,Esculap comp.film. 20 mg. N 4,,,50.0,name,,ambiguous
+130,Apollo comp.50 mg N5,108,Apollo comp. 50 mg N5 (ВУМ-159-02) 10.01.24 Red.2.pdf,75.0,name,7300,ok
+131,Esculap comp.film. 20 mg N 10 (UZ),,,55.670103092783506,name,,ambiguous
+132,Fluconazol-BP comp.150 mg N10,,,81.63265306122449,name,,ambiguous
+133,Gripp Off Plus comp. N10,380,Gripp OFF PLUS comprimate N10 (SPM-168-01) 15.01.25 Red.2.pdf,85.71428571428571,name,51000,ok
+134,Alergostop comp 25 mg. N20,3,ALERGOSTOP comp. 25 mg N20 (ВУМ-010-01) 24.12.21 Red.2.pdf,79.06976744186046,name,25000,ok
+135,Algodex comp 25 mg. N20,5,ALGODEX comp. 25 mg N20 (ВУМ-012-02) - 11.02.21 - Red.2.pdf,75.67567567567568,name,65600,ok
+136,Ambroxol-BP comp.30 mg N20,57,Ambroxol-BP comp. 30 mg N10x2 (SPM-091-01-373) 28.02.26 Red. 4.pdf,70.0,name,38600,ok
+137,"Cabergolin-BP comp. 0,5 mg N 20",,,91.2280701754386,name,,ambiguous
+138,Clemastin-BP comp. 1 mg N20,,,100.0,name,,ambiguous
+139,Clemastin-BP comp. 2 mg N20,,,100.0,name,,ambiguous
+140,Clozapin comp. 100 mg N 20 (export),,,63.1578947368421,name,,ambiguous
+141,Clozapin comp. 25 mg N 20 (export),,,61.111111111111114,name,,ambiguous
+142,Esculap comp.film. 5 mg. N 20,,,50.0,name,,ambiguous
+143,Espas comp. 40 mg N 20 (export),,,66.66666666666666,name,,ambiguous
+144,Famotidina-BP comp. 20 mg N20,,,68.18181818181819,name,,ambiguous
+145,Famotidina-BP comp. 40 mg N20,,,68.18181818181819,name,,ambiguous
+146,Fluconazol-BP comp.50 mg N20,357,Fluconazol-BP comp. 50 mg N20 (ВУМ-055-02) 15.01.2019.pdf,83.33333333333333,name,2400,ok
+147,Ibuprofen-BP comp. 200 mg N20,,,92.5925925925926,name,,ambiguous
+148,Ibuprofen-BP comp. 400 mg N20,,,92.5925925925926,name,,ambiguous
+149,Meloxicam-BP comp. 15 mg N20,516,Meloxicam-BP comp. 15 mg N20 (ВУМ-084-03) Red.2 - 12.02.20.pdf,100.0,name,24000,ok
+150,Metilprednisolon-BP comp. 4 mg N20,538,Metilprednisolon-BP comp. 4 mg N20 (SPM-088-01) 29.12.25 Red.3.pdf,100.0,name,12000,ok
+151,Metronidazol-BP comp.film. 500 mg N20,,,67.85714285714286,name,,ambiguous
+152,Nimesulid-BP comp. 100 mg N 20,,,90.9090909090909,name,,ambiguous
+153,Ondansetron-BP comp. 8 mg N 20,,,90.9090909090909,name,,ambiguous
+154,Panzimed Forte comp. N 20,,,88.88888888888889,name,,ambiguous
+155,Risperidona-BP comp. 2 mg N20,,,65.11627906976744,name,,ambiguous
+156,Spasmoverin comp. 40 mg N 20 (export),,,90.19607843137254,name,,ambiguous
+157,Spasmoverin Forte comp. 80 mg N 20 (export),,,92.06349206349206,name,,ambiguous
+158,Tavestin comp. 1mg N 20,,,51.61290322580645,name,,ambiguous
+159,"Dexamethazon-BP comp. 0,5 mg N25",,,66.66666666666666,name,,ambiguous
+160,Aceclofenac-BP comp. 100 mg N30,14,Aceclofenac-BP comp. 100 mg N10x3 (SPM-001-01) 26.08.25 Red. 4.pdf,93.10344827586206,name,39600,ok
+161,AlgoSpazmin comp N 30,,,68.75,name,,ambiguous
+162,Amiodaron-BP comp.200 mg N30,59,Amiodaron-BP comp. 200mg N30 (SPM-016-01-373) 28.05.24 Red.2.pdf,72.72727272727272,name,6000,ok
+163,Amlodipin-BP comp 10 mg. N30,64,Amlodipin-BP comp. 10 mg N10x3 (SPM-207-06) 23.06.25 Red.3.pdf,69.76744186046511,name,65350,ok
+164,Amlodipin-BP comp 5 mg. N30,66,Amlodipin-BP comp. 5 mg N10x3 (SPM-207-07) 23.06.25 Red.2.pdf,68.29268292682927,name,32800,ok
+165,Bicalutamid-BP comp. 150 mg N30,148,Bicalutamid-BP comp. 150 mg N10x3 (ВУМ-026-02) 24.10.22 Red.3.pdf,93.10344827586206,name,14200,ok
+166,Bisoprolol-BP comp.film 10 mg N 30,152,Bisoprolol-BP comp. filmate 10 mg N10x3 (SPM-027-06) 23.02.26 Red. 3.pdf,71.69811320754717,name,24000,ok
+167,"Bisoprolol-BP comp.film 2,5 mg N 30",154,"Bisoprolol-BP comp. filmate 2,5 mg N10x3 (SPM-027-07) 23.02.26 Red. 2.pdf",72.72727272727272,name,49800,ok
+168,Bisoprolol-BP comp.film. 5 mg N 30,156,Bisoprolol-BP comp. filmate 5 mg N10x3 (SPM-027-05) 23.02.26 Red. 3.pdf,69.23076923076923,name,92000,ok
+169,Carvedilol-BP comp. 25 mg N30,200,Carvedilol-BP comp. 25 mg N10x3 (SPM-032-06-373) 24.03.26 Red.2.pdf,92.5925925925926,name,8000,ok
+170,Carvedilol-BP comp. 6.25 mg N30,,,83.01886792452831,name,,ambiguous
+171,Citicolin comp. film. 500 mg N30,,,63.829787234042556,name,,ambiguous
+172,Citramon-BP comp. N30,234,Citramon-BP FORTE comp. N30 (ВУМ-167-02-373) 05.07.23 Red.5.pdf,100.0,name,582650,ok
+173,Citramon-BP Forte comp. N30,234,Citramon-BP FORTE comp. N30 (ВУМ-167-02-373) 05.07.23 Red.5.pdf,100.0,name,412700,ok
+174,Digestiv comp.gastro. 10000 UI N 30,295,Digestiv 10000 comp. gastro. N30 MD (SPM-214-03-373) 05.03.26 Red. 5.pdf,64.07766990291262,name,24500,ok
+175,Esculap comp.film. 5 mg N 30 (UZ),,,54.166666666666664,name,,ambiguous
+176,Gastrigen comp. 10000 N 30 (UA),295,Digestiv 10000 comp. gastro. N30 MD (SPM-214-03-373) 05.03.26 Red. 5.pdf,59.45945945945946,name,161100,ok
+177,Glicina Forte comp.300 mg N30,377,Glicina FORTE comp. de supt 300 mg N30 (ВУМ-188-373) 05.05.22 Red. 4.pdf,81.63265306122449,name,32500,ok
+178,"Indapamid-BP comp.film. 1,5 mg N30",,,64.64646464646464,name,,ambiguous
+179,"Indapamid-BP comp.film. 2,5 mg N 30",419,"Indapamid-BP comp. film 2,5 mg N10x3 (SPM-201-03) 21.05.24 Red. 3.pdf",70.37037037037037,name,32700,ok
+180,Lercanid-BP comp.film. 10 mg N 30 !!!,,,62.96296296296296,name,,ambiguous
+181,Lercanid-BP comp.film. 20 mg N 30 !!!,,,58.490566037735846,name,,ambiguous
+182,Lisinopril-BP comp 10mg N30,,,65.0,name,,ambiguous
+183,Lisinopril-BP comp 20mg N30,,,65.0,name,,ambiguous
+184,Lisinopril-BP comp 5mg N30,,,66.66666666666666,name,,ambiguous
+185,Losartan-BP comp.film. 100 mg N30,,,70.58823529411765,name,,ambiguous
+186,Losartan-BP comp.film. 50 mg N30 !!!,,,64.64646464646464,name,,ambiguous
+187,Magneziu Chelate + Vit.B6 comp. N 30,,,53.06122448979592,name,,ambiguous
+188,"Metotrexat-BP comp. 2,5 mg N30",,,92.85714285714286,name,,ambiguous
+189,Paroxetin-BP comp. 20 mg N30,,,92.3076923076923,name,,ambiguous
+190,Piridostigmin-BP comp. 60 mg N30,655,Piridostigmin-BP comp. 60 mg N30 flacon (ВУМ-115-02) 16.11.21 Red.2.pdf,100.0,name,7000,ok
+191,Plaquin comp. 200 mg N 30 (Yemen),,,64.86486486486487,name,,ambiguous
+192,Ramipril-BP comp. 10 mg N30,687,Ramipril-BP comp. 10 mg N10x3 (SPM-123-02-373) 08.09.25 Red.4.pdf,92.0,name,122200,ok
+193,Ramipril-BP comp. 5 mg N30,,,91.66666666666667,name,,ambiguous
+194,Rivaroxaban-BP comp. 10 mg N 30,,,91.2280701754386,name,,ambiguous
+195,Rivaroxaban-BP comp. 15 mg N 30 !!!,,,85.24590163934427,name,,ambiguous
+196,Rivaroxaban-BP comp. 20 mg N 30 !!!,,,85.24590163934427,name,,ambiguous
+197,Rovastin-BP comp. film. 10 mg N30,708,Rovastin-BP comp. filmate 10 mg N10x3 (ВУМ-127-01-373) 23.01.22 Red.1.pdf,82.14285714285714,name,31300,ok
+198,Rovastin-BP comp. film. 20 mg N30,710,Rovastin-BP comp. filmate 20 mg N10x3 (ВУМ-127-02-373) 23.01.22 Red.1.pdf,82.14285714285714,name,20000,ok
+199,Sanocard comp. gastro.100 mg N30,,,69.38775510204081,name,,ambiguous
+200,Sanocard comp.gastro. 75 mg N 30 !!!,,,57.407407407407405,name,,ambiguous
+201,"SinuHealth comp. 60 mg/2,5 mg N30",,,80.0,name,,ambiguous
+202,SleepON comp. N 30,,,83.87096774193549,name,,ambiguous
+203,Spasmoverin Forte comp. 80 mg N 30,,,92.06349206349206,name,,ambiguous
+204,Spironolacton-BP comp. 25 mg N30,,,93.33333333333333,name,,ambiguous
+205,Spironolacton-BP comp. 50 mg N30,,,93.33333333333333,name,,ambiguous
+206,Tamoximed comp.filmate 20 mg N30,769,TAMOXIMED  comp. 20 mg N15x2 (ВУМ-137-02-373) 16.10.23 Red.2.pdf,63.829787234042556,name,13000,ok
+207,Tioctovens comp. film. 600 mg N 30,,,58.333333333333336,name,,ambiguous
+208,Tiomax 600 comp. N30,777,TIOMAX comp. filmate 600 mg N10x3 (ВУМ-145-01-373) 02.12.2022 Red.2.pdf,88.88888888888889,name,7000,ok
+209,Torasemid-BP comp. 10 mg N 30,795,Torasemid-BP comp. 10 mg N10x3 (SPM-100-02) 07.10.25 Red.3.pdf,90.56603773584905,name,32500,ok
+210,Torasemid-BP comp. 5 mg N 30,,,90.19607843137254,name,,ambiguous
+211,Valsartan comp. 160 mg N 30,,,61.53846153846154,name,,ambiguous
+212,Valsartan comp. 80 mg N 30,,,59.45945945945946,name,,ambiguous
+213,Vasorutin comp.50 mg + 50 mg N30,815,Vasorutin_comp_50mg_N30 (SPM-197-01) 27.05.24 Red.2.pdf,61.904761904761905,name,12000,ok
+214,Vitamina C comp.film. 1000 mg N 30 (RO),831,Vitamin C comp. filmate 1000 mg N30 (SPM-463-04) 17.02.26 Red.2.pdf,66.66666666666666,name,39300,ok
+215,Vitamina C comp.film. 500 mg N 30,831,Vitamin C comp. filmate 1000 mg N30 (SPM-463-04) 17.02.26 Red.2.pdf,62.5,name,9600,ok
+216,Carbamazepin-BP comp 200 mg N50,,,63.829787234042556,name,,ambiguous
+217,Carbamazepin-BP comp 400 mg N50,,,63.829787234042556,name,,ambiguous
+218,Ipidacrina-BP comp. 20 mg N50,,,58.69565217391305,name,,ambiguous
+219,Acid Folic-BP comp. 5 mg N 60,,,90.56603773584905,name,,ambiguous
+220,Ashwagandha BP comp. 600 mg N 60,119,Ashwagandha BP comp. 600 mg N10x6 (SPM-435-02-373) 15.01.26 Red.2.pdf,91.52542372881356,name,11700,ok
+221,Bicalutamid-BP comp. 50 mg N60,150,Bicalutamid-BP comp. 50 mg N20x3 (ВУМ-026-01) 24.10.22 Red.3.pdf,92.85714285714286,name,6500,ok
+222,Clomed comp. 50 mg N60 noi!!!,,,68.18181818181819,name,,ambiguous
+223,Glicina comp.100 mg N60,371,GLICINA comp. 100 mg N60 (SPM-061-01) 17.02.26 Red.4.pdf,75.67567567567568,name,18500,ok
+224,Iron Chelate comp. 20 mg N 60,432,Iron Chelate comp. filmate 20 mg N15x2 (ВУМ-334-01-373) 24.02.23 Red.1.pdf,90.56603773584905,name,5050,ok
+225,Metformin-BP comp. film. 1000 mg N60,,,83.87096774193549,name,,ambiguous
+226,Metformin-BP comp. film. 500 mg N60,,,83.33333333333333,name,,ambiguous
+227,Metformin-BP comp. film. 850 mg N60,,,83.33333333333333,name,,ambiguous
+228,Metoclopramid-BP comp. 10 mg N60,551,Metoclopramid-BP comp. 10 mg N10x3 (ВУМ-089-01) 17.09.21 Red. 2.pdf,93.33333333333333,name,33000,ok
+229,"Metotrexat-BP comp. 2,5 mg N60",,,92.85714285714286,name,,ambiguous
+230,Monacolin K+Co-Q10 comp. N 60,573,Monacolin K+Co-Q10 comp. 3 mg_30 mg N60 (SPM-422-02) 20.06.25 Red.2.pdf,90.56603773584905,name,12000,ok
+231,Selenium + Zn comp. 50 mcg N 60,723,SELENIUM comp. 50 mcg N60_(OL_SPM-333-01-373_40) 08.02.24 Red.2.pdf,80.76923076923077,name,2200,ok
+232,Anastrozol comp.film 1 mg. N100,81,Anastrozol comp. film 1 mg N25x4 (SPM-397-01) 15.01.25 Red. 2.pdf,58.69565217391305,name,21900,ok
+233,Clenbuterol comp. 40 mcgr N100 !!!,245,Clenbuterol comp. 40 mcg N25x4 (ВУМ-396-01) 20.12.23 Red.1.pdf,74.07407407407408,name,20000,ok
+234,Panzimed Forte comp. N 100,,,86.95652173913044,name,,ambiguous
+235,"SinuHealth comp. 60 mg/2,5 mg N 100",,,77.19298245614036,name,,ambiguous
+237,"AcneStop pulb. 6,5 g N 5",29,"AcneSTOP pulbere 6,5 g N30 (SPM-533-02) 09.09.25 Red.1.pdf",73.6842105263158,name,3500,ok
+238,AlcOVER pulb. N 5,44,AlcOVER sol. orala 10 g N5 (SMP-433-02) 15.12.25 Red. 2.pdf,58.333333333333336,name,8400,ok
+239,Antigripal Forte Lamie pulb.sol.oral. N10,,,65.57377049180329,name,,ambiguous
+240,Antigripal Forte Portocala pulb.sol.oral. N10,,,63.9344262295082,name,,ambiguous
+241,Antigripal Kids pulb.sol.oral. N10,89,Antigripal KIDS pulbere sol orala 250+30+2 mg N10 (ВУМ-192-01) 27.09.22 Red. 2.pdf,71.69811320754717,name,11450,ok
+242,Antigripal pulb.sol.oral. N10,,,65.11627906976744,name,,ambiguous
+243,Bronhoclean pulb.sol.oral. 200 mg 3g N10,,,62.06896551724138,name,,ambiguous
+244,Bronhoclean pulb.sol.oral. 600 mg 3g N10,162,BronhoCLEAN pulbere 600 mg N5x2 (ВУМ-028-03) 26.08.22 Red. 3.pdf,62.06896551724138,name,47200,ok
+245,Bronhoclean pulb.sol.oral. 600 mg 3g N10 (export),162,BronhoCLEAN pulbere 600 mg N5x2 (ВУМ-028-03) 26.08.22 Red. 3.pdf,62.06896551724138,name,20600,ok
+246,"Collagen Class/Business pulb. 14g, N10",,,42.42424242424242,pdf,,no_match
+247,"Hidroreg BP pulb./sol.or. 18,9g N10",,,62.06896551724138,name,,ambiguous
+248,"Hidroreg Optim pulb./sol.or. 10,4 g N10",403,"Hidroreg OPTIM pulbere sol. orala 10,4 g N10 Sup. Alim (ВУМ-196-01-373_40) 29.09.22 Red. 3.pdf",78.125,name,23300,ok
+249,Nimesulid-BP pulb.sol.oral. 100 mg N10,592,Nimesulid-BP granule p-u susp. orala 100 mg N10 (SPM-101-01) 05.03.25 Red.3.pdf,75.40983606557377,name,27900,ok
+250,Orvistop Lemon pulb.sol.oral. 20 g N10,,,46.15384615384615,pdf,,no_match
+251,Orvistop Orange pulb.sol.oral. 20 g N10,,,48.35164835164835,pdf,,no_match
+252,Sulfat de Magneziu pulb.sol.oral.20g N10 (SA),765,Sulfat de Magneziu pulbere sol. orala 20 g N5x2 (ВУМ-134-01) 01.11.22 Red.2.pdf,62.06896551724138,name,22000,ok
+253,"Pro Day Vital Protein (Vanilla) pulb. 25g, N15",,,41.07142857142857,pdf,,no_match
+254,"Pro Night Vegan Protein (Choco) pulb. 27g, N15",,,41.509433962264154,pdf,,no_match
+255,Collagen + Vit.C pulb. 10 g N 30,267,Collagen+Vit. C  pulbere 10 g N30 (SPM-373-01) 19.11.25 Red. 3.pdf,53.763440860215056,name,6600,ok
+256,"Collagen Class/Beauty pulb. 12g, N30",,,47.422680412371136,pdf,,no_match
+257,Creatine-BP pulb.sol.oral. 5 g N 30,,,47.706422018348626,pdf,,no_match
+258,Energy Booster pulb.sol.oral. N 30,324,Energy Booster plicuri N30_k.18.0_(SPM-462-01) 01.07.25 Red.2.pdf,58.333333333333336,name,5300,ok
+259,GH Stim  pulb.sol.oral. N 30,,,41.1764705882353,pdf,,no_match
+260,Joint Support Ultra Easy Take pulb. N 30,437,JOINT SUPPORT Easy Take capsule N10x3 (SPM-408-02-373) 12.01.26 Red.2.pdf,73.01587301587301,name,5300,ok
+261,Joint Support Ultra pulb. N 30,438,Joint SUPPORT Ultra pulbere sol. orala 14 g N30 (SPM-241-01) 15.01.25 Red.3.pdf,77.55102040816327,name,5600,ok
+262,"Weight Control pulb. 8,8 g N30",848,Weight Control pulbere 8.8 g N30 (SPM-373-01) 19.11.25 Red. 3.pdf,80.0,name,10200,ok
+264,Lornoxicam-BP pulb.pt.sol.inj. 8 mg N5,,,75.40983606557377,name,,ambiguous
+265,Famotin pulb.20mg N10,,,50.0,name,,ambiguous
+266,Famotin pulb.20mg+5ml solv. N10 + N 10,,,51.785714285714285,name,,ambiguous
+267,Heparin-BP sol. inj. 5000 UI/ml 5ml N 10,,,76.92307692307692,name,,ambiguous
+268,Bupivacain-BP sol.inj 5mg/ml 10 ml N 1,,,66.66666666666666,name,,ambiguous
+269,NAD+ pulb. 1000 mg N 1,577,NAD+ pulbere 1000 mg N1 (SPM-485-03-373) 15.01.25 Red.1.pdf,70.58823529411765,name,5100,ok
+270,NAD+ pulb. 500 mg N 1,579,NAD+ pulbere 500 mg N1 (SPM-485-01-373) 15.01.25 Red.1.pdf,68.75,name,5800,ok
+271,NADplus pulb. 500 mg N 1,,,51.282051282051285,name,,ambiguous
+272,NADplus pulb. 500 mg N 1 (Poland),,,55.172413793103445,name,,ambiguous
+273,NADplus pulb. 500 mg N 1 (Turcia),,,52.87356321839081,name,,ambiguous
+274,Pantoprazol-BP pulb. p/u sol.inj. 40 mg N10,640,Pantoprazol-BP pulb. sol. inj. 40 mg N10 (ВУМ-256-02-373) 06.07.21 Red. 2.pdf,89.74358974358974,name,32500,ok
+275,Ceftriaxon-BP pulb.pt.sol. 1 g N 20,,,58.18181818181818,name,,ambiguous
+276,Bupivacain-BP sol.inj 5mg/ml 20 ml N 10,,,65.51724137931035,name,,ambiguous
+277,"Tiopental-BP pulb. pt sol. inj. 0,5 g N10",789,"Tiopental-BP pulbere sol. inj. 0,5 g N10 (ВУМ-218-01) 06.11.23 Red.1.pdf",87.67123287671232,name,2250,ok
+278,Tiopental-BP pulb. pt sol. inj. 1 g N10,,,86.95652173913044,name,,ambiguous
+279,"Clorhidrat de lidocaina, sol. inj. 10 mg/ml 20 ml №20",,,75.0,name,,ambiguous
+280,"Clorhidrat de lidocaina, sol. inj. 20 mg/ml 20 ml №20",,,72.0,name,,ambiguous
+281,Clorura de Potasiu-BP 150 mg/ml 20 ml N 20,255,Clorură de Potasiu-BP sol. inj. 150 mg_ml 20 ml N20 (SPM-380-02) 25.03.24 Red.1.pdf,74.19354838709677,name,31050,ok
+282,Tiomax 600 conc sol. perf. 25mg/ml 24ml N1,,,72.72727272727272,name,,ambiguous
+283,Lipacid 600 mg 50 ml N 1 (export),771,TIOMAX 600 Turbo sol. perf. 12 mg-ml 50 mg N1 (ВУМ-006-01) Red 1 - 15.07.20.pdf,62.857142857142854,name,174700,ok
+284,Thioctovens 12 mg/ml 50 ml N 1 (export),,,46.728971962616825,pdf,,no_match
+285,Tiobel 600 mg 50 ml N 1 (export),771,TIOMAX 600 Turbo sol. perf. 12 mg-ml 50 mg N1 (ВУМ-006-01) Red 1 - 15.07.20.pdf,64.70588235294117,name,90000,ok
+286,Tiocter 600 Turbo 12mg/ml 50 ml N 10 (export),771,TIOMAX 600 Turbo sol. perf. 12 mg-ml 50 mg N1 (ВУМ-006-01) Red 1 - 15.07.20.pdf,51.666666666666664,name,13000,ok

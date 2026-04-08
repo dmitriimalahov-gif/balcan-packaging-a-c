@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+*.egg-info/
+dist/
+build/
+
+# Локальная SQLite (восстанавливается из сохранений приложения)
+packaging_data.db
+*.db-journal
+
+# Макеты PDF в корне проекта (очень большой объём — не для Git)
+*.pdf
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# Дубликат таблицы в формате Numbers (в репозитории — .xlsx)
+*.numbers
