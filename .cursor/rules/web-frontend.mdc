@@ -1,0 +1,11 @@
+---
+description: React SPA (web/)
+globs: web/src/**/*
+alwaysApply: false
+---
+
+# Frontend web/
+
+- **TypeScript** обязателен; минимум бизнес-логики в компонентах — данные и правила с бэкенда.
+- Контракты API держи в синхроне с [`docs/schemas/api-contracts.md`](mdc:docs/schemas/api-contracts.md) и типами в `web/src`.
+- В dev допускается прокси Vite на API; для prod задавай `VITE_API_URL`.

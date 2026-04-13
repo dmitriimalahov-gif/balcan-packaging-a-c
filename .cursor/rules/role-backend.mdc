@@ -1,0 +1,13 @@
+---
+description: Роль Бэкенд — FastAPI, сервисы, модули application, воркеры (bootstrap §18.3)
+globs: api/**,modules/**/application/**,modules/**/api/**,modules/**/infrastructure/**,worker/**,requirements*.txt
+alwaysApply: false
+---
+
+# Бэкенд
+
+- Реализуй **типизированные** контракты (Pydantic), тонкие хендлеры, логику в `application` / доменных функциях.
+- Не тащи Streamlit в модули; воркеры — в `worker/`, тяжёлое — асинхронно по мере внедрения.
+- Обновляй [`docs/schemas/api-contracts.md`](mdc:docs/schemas/api-contracts.md) при новых эндпоинтах.
+- Согласуй с правилами [`api-backend.mdc`](mdc:.cursor/rules/api-backend.mdc).
+- Отвечай на **русском**, если пользователь не просит иной язык.

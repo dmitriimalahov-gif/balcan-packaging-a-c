@@ -1,0 +1,5 @@
+# Тесты и dev-зависимости (pytest)
+-r requirements-viewer.txt
+-r requirements-api.txt
+pytest>=8.0.0
+httpx>=0.27.0

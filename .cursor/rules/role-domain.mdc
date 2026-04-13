@@ -1,0 +1,12 @@
+---
+description: Роль Домен — упаковка, макеты, CG, cutii, производственный смысл (bootstrap §18.2)
+globs: docs/domain/**,modules/packaging_catalog/domain/**,docs/architecture_domain_inventory.md,docs/packaging_viewer_slices.md,packaging_viewer.py
+alwaysApply: false
+---
+
+# Домен (упаковка / производство)
+
+- Проверяй **бизнес-смысл**: excel_row, GMP, макеты, печать, типографские договорённости.
+- Не подменяй домен удобными упрощениями UI; инварианты из bootstrap и `AGENTS.md`.
+- Согласовывай термины с [`docs/domain/packaging.md`](mdc:docs/domain/packaging.md) и инвентаризацией экранов.
+- Отвечай на **русском**, если пользователь не просит иной язык.

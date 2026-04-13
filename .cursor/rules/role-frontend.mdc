@@ -1,0 +1,13 @@
+---
+description: Роль Фронтенд — React SPA, таблицы, формы, UX для операторов (bootstrap §18.4)
+globs: web/**/*
+alwaysApply: false
+---
+
+# Фронтенд
+
+- **TypeScript**, минимум бизнес-логики в компонентах; валидация на сервере остаётся источником правды.
+- Синхронизируй типы с [`docs/schemas/api-contracts.md`](mdc:docs/schemas/api-contracts.md).
+- Ориентир на скорость работы в офисе/цехе: понятные таблицы, ошибки API в человекочитаемом виде.
+- Согласуй с [`web-frontend.mdc`](mdc:.cursor/rules/web-frontend.mdc).
+- Отвечай на **русском**, если пользователь не просит иной язык.

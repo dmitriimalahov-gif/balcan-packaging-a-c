@@ -1,0 +1,13 @@
+---
+description: Роль Планирование/прогноз — раскладка листа, симуляции, горизонты (bootstrap §18.6)
+globs: modules/planning/**,modules/forecasting/**,packaging_print_planning.py,packaging_sheet_export.py
+alwaysApply: false
+---
+
+# Планирование и прогноз
+
+- Разделяй **факт** и **прогноз**; прогноз не перезаписывает подтверждённые остатки/выпуск.
+- Раскладка и заявки — через существующие модули (`packaging_print_planning` и мосты в `modules/planning`).
+- Режимы прогноза — см. [`modules/forecasting/application/horizon_modes.py`](mdc:modules/forecasting/application/horizon_modes.py).
+- Формулы и допущения должны быть **прослеживаемы** в коде и комментариях.
+- Отвечай на **русском**, если пользователь не просит иной язык.

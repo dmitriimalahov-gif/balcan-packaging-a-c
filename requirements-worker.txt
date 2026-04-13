@@ -1,0 +1,7 @@
+# Опциональные зависимости воркера (после выбора технологии очереди)
+# redis>=5.0.0
+# rq>=1.16.0
+# или celery[redis]
+
+-r requirements-api.txt
+-r requirements-viewer.txt

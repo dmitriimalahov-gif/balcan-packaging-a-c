@@ -1,0 +1,11 @@
+---
+description: Правила для SQLite-слоя packaging_db.py
+globs: packaging_db.py
+alwaysApply: false
+---
+
+# packaging_db.py
+
+- Это **инфраструктура** SQLite. Новые ERP-таблицы предпочтительно в **PostgreSQL** (`db/models.py` + Alembic).
+- Изменения схемы SQLite согласовывай с зеркалом в Postgres и скриптом миграции при необходимости.
+- Публичные операции для сценариев выноси в тонкие функции/репозитории в `modules/packaging_catalog/infrastructure`, чтобы API и Streamlit не дублировали SQL.

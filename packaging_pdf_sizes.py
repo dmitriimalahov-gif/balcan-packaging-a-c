@@ -239,3 +239,52 @@ def extract_and_canonicalize_size_from_pdf(path: Path, max_pages: int = 4) -> st
     """Один проход: текст PDF → размеры → канон."""
     text = extract_text_from_pdf(path, max_pages=max_pages)
     return canonicalize_extracted_size_text(text)
+
+
+# Диапазон «ложных» мм из колонтитулов CMYK (±2, мелкий шрифт) рядом с основным габаритом.
+_BLISTER_NOISE_MM_BAND = (29.0, 33.5)
+
+
+def _dim_in_blister_noise_band(v: float) -> bool:
+    lo, hi = _BLISTER_NOISE_MM_BAND
+    return lo <= v <= hi
+
+
+def extract_blister_flat_size_from_text(text: str) -> str:
+    """
+    То же, что extract_blister_flat_size_from_pdf, но по уже извлечённому тексту страниц.
+    """
+    if not text or text.startswith("__READ_ERROR__"):
+        return ""
+    t = text.replace("\r", "\n").replace("х", "x").replace("Х", "x")
+    best_area = -1.0
+    best_a: float | None = None
+    best_b: float | None = None
+    for m in re.finditer(
+        r"(?i)(\d{2,3}(?:[.,]\d+)?)\s*[x×]\s*(\d{2,3}(?:[.,]\d+)?)\s*mm\b",
+        t,
+    ):
+        a, b = _parse_dim_token(m.group(1)), _parse_dim_token(m.group(2))
+        if a is None or b is None:
+            continue
+        if not (24.0 <= a <= 240.0 and 24.0 <= b <= 240.0):
+            continue
+        if _dim_in_blister_noise_band(a) or _dim_in_blister_noise_band(b):
+            continue
+        area = a * b
+        if area > best_area:
+            best_area = area
+            best_a, best_b = a, b
+    if best_a is None or best_b is None:
+        return ""
+    raw = _dims_from_sequence([best_a, best_b])
+    if not raw:
+        return ""
+    return canonicalize_size_mm(normalize_size(raw))
+
+
+def extract_blister_flat_size_from_pdf(path: Path, max_pages: int = 8) -> str:
+    """Обёртка: текст из PDF → extract_blister_flat_size_from_text."""
+    return extract_blister_flat_size_from_text(
+        extract_text_from_pdf(path, max_pages=max_pages)
+    )

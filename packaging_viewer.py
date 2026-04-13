@@ -10,7 +10,9 @@ PDF открывается в модальном окне (кнопка «PDF» 
 Запуск из папки a-c:
   pip install -r requirements-viewer.txt
   streamlit run packaging_viewer.py
-Кнопка «Загрузить обновлённый Excel» перечитывает файл с диска после внешних правок.
+Кнопки «Загрузить обновлённый Excel», «Скачать Excel» и «Профиль Excel» (вся база) — в шапке под переключателем разделов.
+Эталон листа «Макеты»: первая строка — все 13 заголовков из HEADERS (порядок столбцов может быть любым).
+Опционально `makety_paths_ref.json` — подписи к эталонным путям Excel/SQLite в сайдбаре.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import base64
 from collections import Counter, defaultdict
 from datetime import date, datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
 import html
 import io
 import math
@@ -32,10 +35,48 @@ from typing import Any
 import fitz  # PyMuPDF
 import streamlit as st
 import streamlit.components.v1 as st_components
-from openpyxl import load_workbook
 
 import packaging_db as pkg_db
 import packaging_pdf_sheet_preview as packaging_pdf_preview
+from modules.packaging_catalog.application.makety_display import (
+    format_qty_year_caption,
+    parse_qty_int_for_cg,
+)
+from modules.packaging_catalog.application import excel_io
+from modules.packaging_catalog.application.excel_headers import excel_cell_str
+from modules.packaging_catalog.application.makety_cg_enrichment import (
+    CG_FINISH_LABELS_MAKETY,
+    apply_makety_cg_derived_from_db,
+)
+from modules.packaging_catalog.application.cg_auto_mapping import auto_match_cg
+from modules.packaging_catalog.application.cg_pret_import import parse_cg_pret_workbook
+from modules.packaging_catalog.application.makety_catalog_ref import (
+    load_makety_catalog_ref,
+    load_makety_paths_ref,
+    save_makety_catalog_ref,
+    REF_CATALOG_TOTAL_ROWS,
+    REF_CATALOG_KIND_STATS,
+    MAKETY_CATALOG_REF_PATH,
+    MAKETY_PATHS_REF_PATH,
+)
+from modules.packaging_catalog.application.makety_kind_merge import merge_kind_values_from_sqlite
+from modules.packaging_catalog.domain.kind_bucket import (
+    build_kind_options,
+    kind_bucket,
+    kind_stats,
+    DEFAULT_KIND_OPTIONS,
+)
+from modules.packaging_catalog.domain.makety_excel_config import HEADERS, MAKETY_EXCEL_NCOLS
+from modules.packaging_catalog.domain.makety_filters import (
+    format_size_key_label,
+    item_matches_bucket,
+    item_matches_size_key,
+    item_matches_text_query,
+    size_key_str,
+)
+from modules.packaging_catalog.domain.makety_sort import sort_rows
+
+_excel_cell_str = excel_cell_str
 from pdf_outline_to_svg import open_pdf_document
 from packaging_sizes import (
     canonicalize_size_mm,
@@ -51,31 +92,6 @@ DEFAULT_EXCEL = ROOT / "Упаковка_макеты.xlsx"
 _PKG_KNIFE_PROPAGATE_SESSION_KEY = "_pkg_knife_propagate_done"
 # Сообщение после «Сохранить нож в БД» (видно после st.rerun() над блоком контура)
 _PP_KNIFE_SAVE_FEEDBACK_KEY = "_pp_knife_saved_feedback"
-
-# Заголовки листа Excel «Макеты» (13 столбцов): cutii — последний столбец.
-HEADERS = (
-    "Название (нож CG)",
-    "Категория (CG)",
-    "Лаки (CG)",
-    "Размер (мм)",
-    "Вид",
-    "Исходный PDF",
-    "Размер ножа (мм)",
-    "Нож CG",
-    "Цена (текущая)",
-    "Новая цена",
-    "Кол-во на листе",
-    "Кол-во за год",
-    "Название (cutii)",
-)
-
-MAKETY_EXCEL_NCOLS = len(HEADERS)
-
-_CG_FINISH_LABELS_MAKETY: dict[str, str] = {
-    "lac_wb": "Lac WB (водный лак)",
-    "uv_no_foil": "UV без фольги",
-    "uv_foil": "UV с фольгой",
-}
 
 # Относительные веса столбцов таблицы «Макеты» (аргумент st.columns)
 MAKETY_COL_WIDTH_DEFAULTS: tuple[float, ...] = (
@@ -109,100 +125,65 @@ MAKETY_COL_LABELS: tuple[str, ...] = (
     "За год",
 )
 
+MAKETY_COL_WIDTHS_USER_PATH = ROOT / "makety_col_widths_user.json"
+
+
+def _load_user_makety_col_widths() -> list[float] | None:
+    """Сохранённые пользователем доли ширины столбцов (если файл есть и валиден)."""
+    import json
+
+    p = MAKETY_COL_WIDTHS_USER_PATH
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        w = data.get("widths")
+        n = len(MAKETY_COL_WIDTH_DEFAULTS)
+        if not isinstance(w, list) or len(w) != n:
+            return None
+        out = [float(x) for x in w]
+        if any(not math.isfinite(x) or x <= 0 for x in out):
+            return None
+        return out
+    except Exception:
+        return None
+
+
+def save_user_makety_col_widths(widths: list[float]) -> None:
+    """Записать доли столбцов в makety_col_widths_user.json (атомарно)."""
+    import json
+
+    n = len(MAKETY_COL_WIDTH_DEFAULTS)
+    if len(widths) != n:
+        raise ValueError("wrong widths length")
+    target = MAKETY_COL_WIDTHS_USER_PATH.expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"widths": [float(x) for x in widths]}
+    fd, raw = tempfile.mkstemp(suffix=".json", dir=str(target.parent))
+    os.close(fd)
+    tmp = Path(raw)
+    try:
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, target)
+    except Exception:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        raise
+
 
 def _init_makety_col_width_session() -> None:
+    user_w = _load_user_makety_col_widths()
     for i, d in enumerate(MAKETY_COL_WIDTH_DEFAULTS):
         k = f"pkg_col_w_{i}"
         if k not in st.session_state:
-            st.session_state[k] = float(d)
+            st.session_state[k] = float(user_w[i]) if user_w is not None else float(d)
 
 
 def _makety_col_weights() -> list[float]:
     return [float(st.session_state[f"pkg_col_w_{i}"]) for i in range(len(MAKETY_COL_WIDTH_DEFAULTS))]
-
-
-def _excel_cell_str(row: tuple[Any, ...] | None, idx: int) -> str:
-    if row is None or len(row) <= idx:
-        return ""
-    v = row[idx]
-    return "" if v is None else str(v).strip()
-
-
-def _parse_qty_int_for_cg(val: str) -> int:
-    if not val:
-        return 0
-    cleaned = val.replace(" ", "").replace("\u00a0", "").replace(",", ".")
-    try:
-        return int(float(cleaned))
-    except (ValueError, TypeError):
-        return 0
-
-
-def _excel_header_is_makety_v3(hdr_t: tuple[Any, ...]) -> bool:
-    """Столбец H (индекс 7) — «Нож CG» в актуальном макете Excel."""
-    if len(hdr_t) <= 7:
-        return False
-    h = _excel_cell_str(hdr_t, 7).lower().replace(" ", "")
-    return "нож" in h and "cg" in h
-
-
-def apply_makety_cg_derived_from_db(db_path: Path, rows: list[dict[str, Any]]) -> None:
-    """
-    Поля каталога CG, размер ножа из knife_cache и текущая цена CG (за 1000 шт., приоритет отделки lac_wb).
-    При сопоставлении excel_row → cutit и наличии прайса перезаписывает item['price'].
-    """
-    if not rows:
-        return
-    if not db_path.is_file():
-        for item in rows:
-            item["_cg_cutit_no"] = ""
-            item["_cg_knife_name"] = ""
-            item["_cg_category"] = ""
-            item["_cg_lacquers"] = ""
-            item["_knife_size_mm"] = ""
-        return
-    conn = pkg_db.connect(db_path)
-    try:
-        pkg_db.init_db(conn)
-        cg_map = pkg_db.load_cg_mapping(conn)
-        cg_knives = pkg_db.load_cg_knives(conn)
-        knives_by = {k["cutit_no"]: k for k in cg_knives}
-        cg_prices = pkg_db.load_cg_prices(conn)
-        knife_meta = pkg_db.load_knives_meta(conn)
-        finish_pref = ("lac_wb", "uv_no_foil", "uv_foil")
-        for item in rows:
-            er = int(item["excel_row"])
-            cutit = ""
-            m = cg_map.get(er)
-            if m:
-                cutit = (m.get("cutit_no") or "").strip()
-            kinfo = knives_by.get(cutit) if cutit else None
-            item["_cg_cutit_no"] = cutit
-            item["_cg_knife_name"] = (kinfo.get("name") or "").strip() if kinfo else ""
-            item["_cg_category"] = (kinfo.get("category") or "").strip() if kinfo else ""
-            pr_c = [p for p in cg_prices if p["cutit_no"] == cutit]
-            fts = sorted(set(str(p["finish_type"]) for p in pr_c))
-            lac_labels = [_CG_FINISH_LABELS_MAKETY.get(f, f) for f in fts]
-            item["_cg_lacquers"] = ", ".join(lac_labels)
-            km = knife_meta.get(er)
-            w0 = float(km["width_mm"]) if km else 0.0
-            h0 = float(km["height_mm"]) if km else 0.0
-            if km and w0 > 0 and h0 > 0:
-                item["_knife_size_mm"] = f"{w0:.1f} × {h0:.1f} mm"
-            else:
-                item["_knife_size_mm"] = ""
-            if cutit and pr_c:
-                qty = _parse_qty_int_for_cg(item.get("qty_per_year") or "")
-                if qty <= 0:
-                    qty = 1
-                ft = next((f for f in finish_pref if any(p["finish_type"] == f for p in pr_c)), None)
-                if ft is None:
-                    ft = str(pr_c[0]["finish_type"])
-                val = pkg_db.cg_price_for_qty(pr_c, ft, qty)
-                if val is not None:
-                    item["price"] = f"{val:.2f}"
-    finally:
-        conn.close()
 
 
 def row_snapshot_for_mirror(item: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
@@ -217,149 +198,12 @@ def row_snapshot_for_mirror(item: dict[str, Any]) -> tuple[str, str, str, str, s
     )
 
 
-def kind_stats(rows: list[dict[str, Any]]) -> dict[str, int]:
-    boxes = blisters = packs = labels = 0
-    for r in rows:
-        b = kind_bucket(r)
-        if b == "box":
-            boxes += 1
-        elif b == "blister":
-            blisters += 1
-        elif b == "pack":
-            packs += 1
-        else:
-            labels += 1
-    return {
-        "Коробки": boxes,
-        "Блистеры": blisters,
-        "Пакеты": packs,
-        "Этикетки": labels,
-    }
 
 
-# Целевая разбивка каталога (для сверки в разделе «Макеты» после сохранения).
-REF_CATALOG_TOTAL_ROWS = 852
-REF_CATALOG_KIND_STATS: dict[str, int] = {
-    "Коробки": 473,
-    "Блистеры": 238,
-    "Пакеты": 49,
-    "Этикетки": 92,
-}
 
 
-def kind_bucket(item: dict[str, Any]) -> str:
-    """Категории фильтра: box | blister | pack | label. Всё остальное относится к этикетке."""
-    raw = (item.get("kind") or "").strip()
-    k = raw.lower()
-    if "без вторичной" in k or "fara secundar" in k or "fara cutie" in k:
-        return "label"
-    if raw == "Коробка" or "короб" in k:
-        return "box"
-    if "блистер" in k or "blister" in k:
-        return "blister"
-    if raw == "Пакет" or "пакет" in k:
-        return "pack"
-    return "label"
 
 
-def item_matches_bucket(item: dict[str, Any], bucket: str) -> bool:
-    if bucket == "all":
-        return True
-    return kind_bucket(item) == bucket
-
-
-def item_matches_size_key(item: dict[str, Any], key_str: str | None) -> bool:
-    if key_str is None:
-        return True
-    return size_key_str(item) == key_str
-
-
-def item_matches_text_query(item: dict[str, Any], q_lower: str) -> bool:
-    """Подстрока без учёта регистра по полям строки, CG, PDF, № Excel."""
-    if not q_lower:
-        return True
-    parts = [
-        item.get("name") or "",
-        item.get("file") or "",
-        item.get("kind") or "",
-        item.get("size") or "",
-        item.get("price") or "",
-        item.get("price_new") or "",
-        item.get("qty_per_sheet") or "",
-        item.get("qty_per_year") or "",
-        item.get("_cg_knife_name") or "",
-        item.get("_cg_category") or "",
-        item.get("_cg_lacquers") or "",
-        item.get("_cg_cutit_no") or "",
-        item.get("_knife_size_mm") or "",
-        str(item.get("excel_row") or ""),
-    ]
-    return q_lower in " ".join(parts).lower()
-
-
-def size_key_str(item: dict[str, Any]) -> str:
-    """Ключ группы габаритов; перестановки тех же мм совпадают (см. packaging_sizes)."""
-    return row_size_key(item)
-
-
-def format_size_key_label(key_str: str) -> str:
-    """Подпись для кнопки: «80 × 57 mm» или «Без размера»."""
-    if key_str == "__empty__":
-        return "Без размера"
-    parts = [int(x) for x in key_str.split("|")]
-    while parts and parts[-1] == 0:
-        parts.pop()
-    if not parts:
-        return "Без размера"
-    return " × ".join(str(p) for p in parts) + " mm"
-
-
-def sort_rows(
-    items: list[dict[str, Any]],
-    by: str,
-    reverse: bool,
-) -> list[dict[str, Any]]:
-    if by == "По виду":
-        return sorted(
-            items,
-            key=lambda r: (r.get("kind") or "").lower(),
-            reverse=reverse,
-        )
-    if by in ("По размеру (габариты мм)", "По размеру"):
-
-        def size_key(r: dict[str, Any]) -> tuple[float, ...]:
-            return parse_box_dimensions_mm(r.get("size") or "")
-
-        return sorted(items, key=size_key, reverse=reverse)
-    if by == "По названию":
-        return sorted(
-            items,
-            key=lambda r: (
-                (r.get("_cg_knife_name") or r.get("name") or "").lower(),
-            ),
-            reverse=reverse,
-        )
-    if by == "По PDF":
-        return sorted(
-            items,
-            key=lambda r: (r.get("file") or "").lower(),
-            reverse=reverse,
-        )
-    if by == "По строке Excel":
-        return sorted(
-            items,
-            key=lambda r: int(r.get("excel_row") or 0),
-            reverse=reverse,
-        )
-    return list(items)
-
-
-DEFAULT_KIND_OPTIONS = (
-    "Коробка",
-    "Blister",
-    "Пакет",
-    "Этикетка",
-)
 
 
 def _widget_key_suffix(filename: str) -> str:
@@ -490,6 +334,7 @@ def render_pdf_sheet_slot_knife_png(
     slot_h_mm: float,
     dpi: float,
     transparent_bg: bool,
+    layout_kind: str = "",
 ) -> bytes | None:
     """Область контура ножа (bbox обводок) → PNG, вписанная в слот; без контура — None."""
     import packaging_pdf_sheet_preview as ppsp
@@ -500,6 +345,7 @@ def render_pdf_sheet_slot_knife_png(
         float(slot_h_mm),
         dpi=float(dpi),
         transparent_bg=bool(transparent_bg),
+        layout_kind=(layout_kind or None),
     )
 
 
@@ -574,118 +420,43 @@ def prefetch_thumbs_parallel(
             fu.result()
 
 
-def load_rows_from_excel(excel_path: Path) -> list[dict[str, Any]]:
-    wb = load_workbook(excel_path, read_only=True, data_only=True)
-    ws = wb.active
-    hdr_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
-    hdr_t = tuple(hdr_row) if hdr_row else tuple()
-    layout_v3 = _excel_header_is_makety_v3(hdr_t)
-    f1 = _excel_cell_str(hdr_t, 5) if len(hdr_t) > 5 else ""
-    f1l = f1.lower()
-    layout_v2 = bool(not layout_v3 and f1 and ("нов" in f1l or "new price" in f1l))
-    rows_out: list[dict[str, Any]] = []
-    for excel_row, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-        if row is None or all(v is None for v in row):
-            continue
-        row_t = tuple(row) if row is not None else tuple()
-        if layout_v3:
-            rows_out.append(
-                {
-                    "excel_row": excel_row,
-                    "name": _excel_cell_str(row_t, 12),
-                    "size": _excel_cell_str(row_t, 3),
-                    "kind": _excel_cell_str(row_t, 4),
-                    "file": _excel_cell_str(row_t, 5),
-                    "price": _excel_cell_str(row_t, 8),
-                    "price_new": _excel_cell_str(row_t, 9),
-                    "qty_per_sheet": _excel_cell_str(row_t, 10),
-                    "qty_per_year": _excel_cell_str(row_t, 11),
-                }
-            )
-        elif layout_v2:
-            rows_out.append(
-                {
-                    "excel_row": excel_row,
-                    "name": _excel_cell_str(row_t, 0),
-                    "size": _excel_cell_str(row_t, 1),
-                    "kind": _excel_cell_str(row_t, 2),
-                    "file": _excel_cell_str(row_t, 3),
-                    "price": _excel_cell_str(row_t, 4),
-                    "price_new": _excel_cell_str(row_t, 5),
-                    "qty_per_sheet": _excel_cell_str(row_t, 6),
-                    "qty_per_year": _excel_cell_str(row_t, 7),
-                }
-            )
-        else:
-            rows_out.append(
-                {
-                    "excel_row": excel_row,
-                    "name": _excel_cell_str(row_t, 0),
-                    "size": _excel_cell_str(row_t, 1),
-                    "kind": _excel_cell_str(row_t, 2),
-                    "file": _excel_cell_str(row_t, 3),
-                    "price": _excel_cell_str(row_t, 4),
-                    "price_new": "",
-                    "qty_per_sheet": _excel_cell_str(row_t, 5),
-                    "qty_per_year": _excel_cell_str(row_t, 6),
-                }
-            )
-    wb.close()
-    return rows_out
+def load_rows_from_excel(
+    excel_path: Path,
+    *,
+    strict_reference_layout: bool = False,
+) -> list[dict[str, Any]]:
+    """
+    Читает активный лист. Если в первой строке найдены все 13 заголовков из HEADERS
+    (порядок столбцов может быть любым), строки разбираются по этим именам — как эталон «Макеты».
+
+    strict_reference_layout=True: при отсутствии полного набора заголовков — ValueError
+    (нужно привести файл к эталону или выключить строгий режим в сайдбаре).
+    """
+    return excel_io.load_rows_from_excel(
+        excel_path, strict_reference_layout=strict_reference_layout
+    )
 
 
-def _patch_excel_header_row(ws: Any) -> None:
-    """Первая строка — заголовки столбцов (13 столбцов)."""
-    for col_idx, title in enumerate(HEADERS, start=1):
-        ws.cell(row=1, column=col_idx, value=title)
-
-
-def _excel_clear_data_below(ws: Any, max_row_keep: int) -> None:
-    """Удаляет значения ниже последней строки набора (старые «хвосты» после сокращения списка)."""
-    last = int(ws.max_row or max_row_keep)
-    if last <= max_row_keep:
-        return
-    for r_idx in range(max_row_keep + 1, last + 1):
-        for c in range(1, MAKETY_EXCEL_NCOLS + 1):
-            ws.cell(row=r_idx, column=c).value = None
-
-
-def _makety_row_to_excel_cells(item: dict[str, Any]) -> dict[int, Any]:
-    """13 колонок листа «Макеты» (см. HEADERS)."""
-    return {
-        1: item.get("_cg_knife_name") or None,
-        2: item.get("_cg_category") or None,
-        3: item.get("_cg_lacquers") or None,
-        4: item.get("size") or None,
-        5: item.get("kind") or None,
-        6: item.get("file") or None,
-        7: item.get("_knife_size_mm") or None,
-        8: item.get("_cg_cutit_no") or None,
-        9: item.get("price") or None,
-        10: item.get("price_new") or None,
-        11: item.get("qty_per_sheet") or None,
-        12: item.get("qty_per_year") or None,
-        13: item.get("name") or None,
-    }
-
-
-def _workbook_save_atomic(wb: Any, excel_path: Path) -> None:
-    """Сохранение через временный файл и os.replace — целостный перезаписанный .xlsx на диске."""
-    target = excel_path.expanduser().resolve()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, raw = tempfile.mkstemp(suffix=".xlsx", dir=str(target.parent))
-    os.close(fd)
-    tmp = Path(raw)
-    try:
-        wb.save(tmp)
-        os.replace(tmp, target)
-    except Exception:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-        raise
+def normalize_excel_file_to_makety_reference(
+    excel_path: Path,
+    db_path: Path | None,
+    *,
+    overwrite_nonempty_excel: bool = False,
+) -> list[dict[str, Any]]:
+    """
+    Читает Excel (в т.ч. старый формат), подмешивает «Вид» из БД при необходимости,
+    перезаписывает файл в каноническом виде: строка 1 = HEADERS, 13 столбцов, данные как в эталоне.
+    """
+    rows = load_rows_from_excel(excel_path, strict_reference_layout=False)
+    if db_path is not None:
+        merge_kind_from_db(
+            rows,
+            db_path,
+            excel_path,
+            overwrite_nonempty_excel=overwrite_nonempty_excel,
+        )
+    save_rows_to_excel(excel_path, rows, db_path=db_path)
+    return rows
 
 
 def save_rows_to_excel(
@@ -693,18 +464,7 @@ def save_rows_to_excel(
     rows: list[dict[str, Any]],
     db_path: Path | None = None,
 ) -> None:
-    if db_path is not None:
-        apply_makety_cg_derived_from_db(db_path, rows)
-    wb = load_workbook(excel_path)
-    ws = wb.active
-    _patch_excel_header_row(ws)
-    for item in rows:
-        r = item["excel_row"]
-        for c, v in _makety_row_to_excel_cells(item).items():
-            ws.cell(row=r, column=c, value=v)
-    max_er = max((int(r["excel_row"]) for r in rows), default=1)
-    _excel_clear_data_below(ws, max_er)
-    _workbook_save_atomic(wb, excel_path)
+    excel_io.save_rows_to_excel(excel_path, rows, db_path=db_path)
 
 
 def save_one_row_to_excel(
@@ -713,15 +473,7 @@ def save_one_row_to_excel(
     db_path: Path | None = None,
 ) -> None:
     """Обновляет одну строку листа; файл перезаписывается атомарно."""
-    if db_path is not None:
-        apply_makety_cg_derived_from_db(db_path, [item])
-    wb = load_workbook(excel_path)
-    ws = wb.active
-    _patch_excel_header_row(ws)
-    r = int(item["excel_row"])
-    for c, v in _makety_row_to_excel_cells(item).items():
-        ws.cell(row=r, column=c, value=v)
-    _workbook_save_atomic(wb, excel_path)
+    excel_io.save_one_row_to_excel(excel_path, item, db_path=db_path)
 
 
 def save_rows_to_db(db_path: Path, rows: list[dict[str, Any]]) -> None:
@@ -735,10 +487,6 @@ def save_rows_to_db(db_path: Path, rows: list[dict[str, Any]]) -> None:
         conn.close()
 
 
-def build_kind_options(rows: list[dict[str, Any]]) -> list[str]:
-    from_file = {r["kind"].strip() for r in rows if r.get("kind")}
-    merged = set(DEFAULT_KIND_OPTIONS) | from_file
-    return sorted(merged, key=lambda x: (x.lower(), x))
 
 
 def sync_widgets_to_rows(rows: list[dict[str, Any]]) -> None:
@@ -1608,6 +1356,7 @@ def render_print_orders_tab(
                                 float(pl_imp[0].h),
                                 dpi_outline,
                                 pp_png_transparent,
+                                kind_bucket(row_ol),
                             )
                         if png_i is None and outline_from_db and svg_ol:
                             png_i = packaging_pdf_preview.render_cached_svg_knife_fit_to_mm(
@@ -2005,6 +1754,8 @@ def render_print_orders_tab(
                             st.caption("—")
                     else:
                         st.caption("—")
+                    _qpy_full = (row_pdf.get("qty_per_year") or r.get("qty_per_year") or "").strip()
+                    st.caption(format_qty_year_caption(_qpy_full or None))
                 with num_col:
                     cnt = st.number_input(
                         f"Ячеек для er {er}: {line}",
@@ -2093,6 +1844,13 @@ def render_print_orders_tab(
             help="Итоговые оттиски = число ячеек этого наименования на одном листе × это количество листов.",
         )
 
+        _pp_pdf_finish_label = (st.session_state.get("pl_finish_type") or "").strip()
+        _pp_pdf_finish_code = {
+            "Lac WB (водный лак)": "lac_wb",
+            "UV без фольги": "uv_no_foil",
+            "UV с фольгой": "uv_foil",
+        }.get(_pp_pdf_finish_label, "lac_wb")
+
         sum_rows: list[dict[str, Any]] = []
         if n_slots > 0 and slot_er_list:
             ctr = Counter(er for er in slot_er_list if er is not None)
@@ -2126,9 +1884,63 @@ def render_print_orders_tab(
             st.subheader("Итого по партии")
             st.caption(
                 "«Всего оттисков» — сколько раз на печать попадёт макет данной позиции "
-                "(при трактовке «одна ячейка = один оттиск этикетки/стороны коробки»)."
+                "(при трактовке «одна ячейка = один оттиск этикетки/стороны коробки»). "
+                "Столбец **€/1000 (CG)** — оценка по прайсу типографии для выбранного в планировщике типа лакирования "
+                "(если открывали планировщик) или **Lac WB** по умолчанию."
             )
-            st.dataframe(pd.DataFrame(sum_rows), use_container_width=True, hide_index=True)
+            if db_path.is_file() and sum_rows:
+                try:
+                    _cn_cg = pkg_db.connect(db_path)
+                    try:
+                        pkg_db.init_db(_cn_cg)
+                        _cmap_pdf = pkg_db.load_cg_mapping(_cn_cg)
+                        for _ix, _sr in enumerate(sum_rows):
+                            _er0 = _sr.get("excel_row")
+                            if _er0 in (None, "—"):
+                                sum_rows[_ix] = {
+                                    **_sr,
+                                    "€/1000 (CG)": "—",
+                                    "_cutit": "",
+                                    "_finish": _pp_pdf_finish_code,
+                                }
+                                continue
+                            _m = _cmap_pdf.get(int(_er0))
+                            _ct = (_m or {}).get("cutit_no") if _m else None
+                            if not _ct:
+                                sum_rows[_ix] = {
+                                    **_sr,
+                                    "€/1000 (CG)": "—",
+                                    "_cutit": "",
+                                    "_finish": _pp_pdf_finish_code,
+                                }
+                                continue
+                            _pq = pkg_db.load_cg_prices(_cn_cg, cutit_no=str(_ct))
+                            _tq = int(_sr.get("Всего оттисков (ячейки×листы)", 0) or 0)
+                            _pv = pkg_db.cg_price_for_qty(
+                                _pq, _pp_pdf_finish_code, max(1, _tq)
+                            )
+                            sum_rows[_ix] = {
+                                **_sr,
+                                "€/1000 (CG)": f"{_pv:.2f}" if _pv is not None else "—",
+                                "_cutit": str(_ct),
+                                "_finish": _pp_pdf_finish_code,
+                            }
+                    finally:
+                        _cn_cg.close()
+                except Exception:
+                    for _ix, _sr in enumerate(sum_rows):
+                        if "€/1000 (CG)" not in _sr:
+                            sum_rows[_ix] = {**_sr, "€/1000 (CG)": "—"}
+            elif sum_rows:
+                for _ix, _sr in enumerate(sum_rows):
+                    sum_rows[_ix] = {**_sr, "€/1000 (CG)": "—"}
+            _df_sum_party = pd.DataFrame(sum_rows)
+            _hide_pdf_cols = [c for c in _df_sum_party.columns if str(c).startswith("_")]
+            st.dataframe(
+                _df_sum_party.drop(columns=_hide_pdf_cols, errors="ignore"),
+                use_container_width=True,
+                hide_index=True,
+            )
 
         slot_b64_full: list[str | None] = []
         slot_outline_full: list[str | None] = []
@@ -2212,8 +2024,7 @@ def render_print_orders_tab(
                 knife_flip_h=bool(st.session_state.get("pp_svg_flip_h", False)),
                 knife_flip_v=bool(st.session_state.get("pp_svg_flip_v", False)),
             )
-            _ts = datetime.now().strftime("%Y%m%d_%H%M")
-            _base_fn = f"sheet_{sk_safe}_{_ts}"
+            _base_fn = f"sheet_{sk_safe}"
 
             def _export_stats_lines_pdf() -> list[str]:
                 lines: list[str] = []
@@ -2234,7 +2045,8 @@ def render_print_orders_tab(
                         lines.append(
                             f"  {row.get('excel_row')}: {row.get('Название', '')} | "
                             f"ячеек/лист={row.get('Ячеек на 1 листе')} | листов={row.get('Листов в партии')} | "
-                            f"оттисков={row.get('Всего оттисков (ячейки×листы)')} | БД={row.get('Кол-во на листе (БД)')}"
+                            f"оттисков={row.get('Всего оттисков (ячейки×листы)')} | БД={row.get('Кол-во на листе (БД)')} "
+                            f"| €/1000(CG)={row.get('€/1000 (CG)', '—')}"
                         )
                 else:
                     lines.append("  (нет строк итогов — задайте назначение слотов)")
@@ -2258,39 +2070,203 @@ def render_print_orders_tab(
                     f"зеркало ↔={st.session_state.get('pp_svg_flip_h')}; ↕={st.session_state.get('pp_svg_flip_v')}"
                 )
                 lines.append(
-                    "В PDF на стр. 1 вставлены те же PNG, что и для SVG; поворот и зеркало ножа "
-                    "применяются в SVG, в PDF растр пока без этих преобразований."
+                    "PDF стр. 1: PNG по слотам + мини-схема раскладки (SVG→PNG) в углу. "
+                    "Далее — сводка A4 с таблицами; растровый PDF без поворота/зеркала внутри ячеек (как в SVG-превью)."
                 )
                 return lines
+
+            def _pp_extras_note_for_pdf() -> str:
+                _parts: list[str] = []
+                if not db_path.is_file():
+                    return "БД не найдена — доплаты планировщика недоступны."
+                try:
+                    _cx = pkg_db.connect(db_path)
+                    try:
+                        pkg_db.init_db(_cx)
+                        _exrows = pkg_db.load_print_finish_extras(_cx)
+                    finally:
+                        _cx.close()
+                    _byc = {e["code"]: e for e in _exrows}
+                    for _sk, _cd in (
+                        ("pl_fin_lac_uv", "lac_uv"),
+                        ("pl_fin_lac_wb", "lac_wb"),
+                        ("pl_fin_foil", "foil"),
+                        ("pl_fin_pantone_plus1", "pantone_plus1"),
+                    ):
+                        if st.session_state.get(_sk) and _cd in _byc:
+                            _r = _byc[_cd]
+                            _parts.append(
+                                f"{_r['label']} (+{float(_r['extra_per_sheet']):.2f}/лист)"
+                            )
+                except Exception:
+                    return ""
+                if not _parts:
+                    return "Доплаты (лак UV/WB, фольга, Pantone+1): в планировщике не отмечены."
+                return "Отмечено для расчёта: " + "; ".join(_parts)
+
+            _econ_raw = st.session_state.get("pl_last_print_economics")
+            _econ_block: dict[str, Any]
+            if isinstance(_econ_raw, dict) and _econ_raw.get("size_key") == chosen_sk:
+                _u = " €" if _econ_raw.get("use_cg") else ""
+                _elns = [
+                    f"Период потребности: {_econ_raw.get('period', '—')}",
+                    f"Сборный тираж: {int(_econ_raw.get('n_sheets', 0)):,} листов · "
+                    f"стоимость {float(_econ_raw.get('total_cost', 0)):,.2f}{_u}",
+                    f"Раздельная печать: {int(_econ_raw.get('sep_sheets', 0)):,} листов · "
+                    f"стоимость {float(_econ_raw.get('sep_cost', 0)):,.2f}{_u}",
+                    f"Экономия сборного тиража: {float(_econ_raw.get('savings', 0)):,.2f}{_u} "
+                    f"({float(_econ_raw.get('savings_pct', 0)):.1f}% к раздельной)",
+                    f"Цена за оттиск: сборно {float(_econ_raw.get('cost_per_imprint_c', 0)):.4f}{_u} · "
+                    f"раздельно {float(_econ_raw.get('cost_per_imprint_s', 0)):.4f}{_u}",
+                ]
+                if _econ_raw.get("finish_label"):
+                    _elns.insert(1, f"Лакирование CG в расчёте: {_econ_raw.get('finish_label')}")
+                if _econ_raw.get("extras_note"):
+                    _elns.append(f"Доплаты (суммарно по отмеченным): {_econ_raw.get('extras_note')}")
+                _econ_block = {"has_data": True, "lines": _elns}
+            else:
+                _econ_block = {"has_data": False, "lines": []}
+
+            _knife_pdf_note = ""
+            if pl_active:
+                _knife_pdf_note = (
+                    f"Ячейка слота 1 на листе: {pl_active[0].w:g} × {pl_active[0].h:g} мм"
+                )
+                _er_f = next((e for e in slot_er_list if e is not None), None) if slot_er_list else None
+                if _er_f is not None:
+                    _knf = _knives_print_by_er.get(int(_er_f))
+                    if _knf and float(_knf.get("width_mm") or 0) > 0:
+                        _knife_pdf_note += (
+                            f" · нож в кэше БД: {float(_knf['width_mm']):.1f}×{float(_knf['height_mm']):.1f} мм"
+                        )
+
+            _party_pdf = [
+                {
+                    "name": r.get("Название", ""),
+                    "cells": r.get("Ячеек на 1 листе", ""),
+                    "sheets": r.get("Листов в партии", ""),
+                    "imprints": r.get("Всего оттисков (ячейки×листы)", ""),
+                    "db_qps": r.get("Кол-во на листе (БД)", ""),
+                    "eur_per_1000": r.get("€/1000 (CG)", "—"),
+                }
+                for r in sum_rows
+            ]
+            _slot_pdf = []
+            for _si in range(n_slots):
+                _er_s = slot_er_list[_si] if _si < len(slot_er_list) else None
+                _lb_s = slot_labels[_si] if _si < len(slot_labels) else ""
+                _slot_pdf.append({
+                    "slot": _si + 1,
+                    "er": _er_s if _er_s is not None else "—",
+                    "label": _lb_s,
+                })
+            _cg_finish_disp = {
+                "lac_wb": "Lac WB",
+                "uv_no_foil": "UV б/ф",
+                "uv_foil": "UV+фольга",
+            }
+            _cg_pdf = []
+            for r in sum_rows:
+                _er_c = r.get("excel_row")
+                if _er_c in (None, "—"):
+                    continue
+                _fc = str(r.get("_finish", _pp_pdf_finish_code) or "")
+                _cg_pdf.append({
+                    "er": _er_c,
+                    "name": str(r.get("Название", ""))[:48],
+                    "cutit": r.get("_cutit", "—"),
+                    "finish": _cg_finish_disp.get(_fc, _fc),
+                    "qty": r.get("Всего оттисков (ячейки×листы)", ""),
+                    "eur_per_1000": r.get("€/1000 (CG)", "—"),
+                })
+
+            _pdf_tech_lines = [
+                f"Превью/экспорт: DPI {float(pp_prev_dpi):g}; "
+                f"растр по контуру ножа={'да' if st.session_state.get('pp_knife_raster_slots') else 'нет'}; "
+                f"контур в ячейках={'да' if pp_show_outline_slots else 'нет'}; "
+                f"PNG с альфой={'да' if pp_png_transparent else 'нет'}",
+                f"Нож в ячейке (в SVG): {int(st.session_state.get('pp_svg_rot', 0))}°; "
+                f"зеркало ↔={st.session_state.get('pp_svg_flip_h')}; ↕={st.session_state.get('pp_svg_flip_v')}",
+                "Сводка PDF: таблицы + мини-схема (SVG раскладки без растров в ячейках).",
+            ]
+            _pdf_summary: dict[str, Any] = {
+                "layout_svg_bytes": svg_export_vector.encode("utf-8"),
+                "sheet_meta": {
+                    "w": sheet_params.width_mm,
+                    "h": sheet_params.height_mm,
+                    "m": sheet_params.margin_mm,
+                    "gx": sheet_params.gap_mm,
+                    "gy": sheet_params.gap_y_mm,
+                    "n_slots": n_slots,
+                    "n_sheets": int(n_print_sheets),
+                },
+                "knife_note": _knife_pdf_note,
+                "party_rows": _party_pdf,
+                "slot_rows": _slot_pdf,
+                "cg_rows": _cg_pdf,
+                "tech_lines": _pdf_tech_lines,
+                "extras_note": _pp_extras_note_for_pdf(),
+                "economics": _econ_block,
+                "legacy_stats_lines": _export_stats_lines_pdf(),
+            }
 
             _pdf_bytes = pse.sheet_layout_to_pdf_bytes(
                 sheet_params,
                 pl_active,
                 slot_png_full,
-                _export_stats_lines_pdf(),
+                None,
                 title_line=title_svg,
+                summary=_pdf_summary,
             )
+            # Streamlit: при новом объекте bytes/str на каждом rerun download_button часто не отдаёт файл
+            # (см. streamlit#7308). Держим стабильные ссылки в session_state, пока не изменилась раскладка.
+            _pp_export_sig = (
+                chosen_sk,
+                tuple(slot_er_list) if slot_er_list else (),
+                int(n_print_sheets),
+                float(pp_prev_dpi),
+                bool(st.session_state.get("pp_knife_raster_slots", False)),
+                bool(pp_png_transparent),
+                bool(pp_show_outline_slots),
+                int(st.session_state.get("pp_svg_rot", 0) or 0),
+                bool(st.session_state.get("pp_svg_flip_h", False)),
+                bool(st.session_state.get("pp_svg_flip_v", False)),
+                title_svg,
+                hashlib.sha256(svg_export.encode("utf-8")).hexdigest()[:24],
+            )
+            _sig_key = f"_pp_export_sig_{sk_safe}"
+            _pdf_key = f"_pp_export_pdf_{sk_safe}"
+            _svg_key = f"_pp_export_svg_{sk_safe}"
+            if st.session_state.get(_sig_key) != _pp_export_sig:
+                st.session_state[_sig_key] = _pp_export_sig
+                st.session_state[_pdf_key] = bytes(_pdf_bytes)
+                st.session_state[_svg_key] = svg_export.encode("utf-8")
+            _pdf_dl = st.session_state.get(_pdf_key) or bytes(_pdf_bytes)
+            _svg_dl = st.session_state.get(_svg_key) or svg_export.encode("utf-8")
+
             dlc1, dlc2 = st.columns(2)
             with dlc1:
                 st.download_button(
                     "Скачать схему листа (SVG, все слоты)",
-                    data=svg_export.encode("utf-8"),
+                    data=_svg_dl,
                     file_name=f"{_base_fn}.svg",
-                    mime="image/svg+xml",
+                    mime="application/octet-stream",
                     key=f"pp_dl_sheet_svg_{sk_safe}",
+                    help="SVG с встроенными растрами; при отказе браузера откройте в новой вкладке или сохраните через «Сохранить как».",
                 )
             with dlc2:
                 st.download_button(
                     "Скачать лист + сводка (PDF)",
-                    data=_pdf_bytes,
+                    data=_pdf_dl,
                     file_name=f"{_base_fn}.pdf",
                     mime="application/pdf",
                     key=f"pp_dl_sheet_pdf_{sk_safe}",
                 )
             st.caption(
-                "Печать из браузера: **лист 1** — полная раскладка с макетами в слотах (растровая раскладка ножей); "
-                "**лист 2** — та же сетка **без растровых изображений** (только слоты, подписи и векторные контуры ножей, "
-                "как во второй вкладке схемы). В диалоге печати выберите ориентацию и масштаб «По размеру страницы»."
+                "Печать из браузера: **лист 1** — полная раскладка с макетами в слотах; **лист 2** — сетка без растров (контуры). "
+                "**Скачать PDF**: стр. 1 — те же PNG + мини-схема раскладки (SVG→PNG) в углу; далее **сводка A4** — таблица партии, "
+                "слоты, **€/1000 по CG**, отмеченные в планировщике **лак/foil/Pantone**, экономия сборного тиража (если планировщик "
+                "считал этот размер). В диалоге печати выберите ориентацию и «По размеру страницы»."
             )
             _print_html = (
                 "<!DOCTYPE html><html><head><meta charset=\"utf-8\"/><style>"
@@ -2512,11 +2488,173 @@ def render_print_orders_tab(
         st.rerun()
 
 
+def _pl_float_cell_to_qty_str(val: Any) -> str:
+    """Значение из data_editor (число/NA) → строка для qty_per_year / qty_per_sheet."""
+    import pandas as pd
+
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return ""
+    if f < 0:
+        return ""
+    if abs(f - round(f)) < 1e-9:
+        return str(int(round(f)))
+    s = f"{f:.6f}".rstrip("0").rstrip(".")
+    return s
+
+
+def _pl_apply_volume_sheet_stock_edits(
+    edited: Any,
+    original: Any,
+    *,
+    excel_path: Path | None,
+    db_path: Path | None,
+    conn: sqlite3.Connection | None,
+    packaging_rows: list[dict[str, Any]],
+) -> tuple[int, int, list[str]]:
+    """
+    Сравнивает отредактированную таблицу с исходной; пишет объёмы в SQLite + Excel,
+    склад — в stock_on_hand по GMP. Возвращает (число строк с правкой объёмов, число правок склада, сообщения).
+    """
+    import pandas as pd
+
+    msgs: list[str] = []
+    if conn is None:
+        return 0, 0, ["Нет подключения к базе."]
+    er_to_idx = {int(r["excel_row"]): i for i, r in enumerate(packaging_rows)}
+
+    edited_df = edited if isinstance(edited, pd.DataFrame) else pd.DataFrame(edited)
+    orig_df = original if isinstance(original, pd.DataFrame) else pd.DataFrame(original)
+    if len(edited_df) != len(orig_df):
+        return 0, 0, ["Число строк таблицы изменилось; обновите страницу."]
+
+    n_vol = 0
+    stock_batch: list[dict[str, Any]] = []
+
+    def _cell_float(series: Any, col: str, i: int) -> float:
+        try:
+            v = series.iloc[i][col]
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                return 0.0
+            return float(v)
+        except (TypeError, ValueError, KeyError, IndexError):
+            return 0.0
+
+    for i in range(len(edited_df)):
+        er = int(edited_df.iloc[i]["er"])
+        if er not in er_to_idx:
+            msgs.append(f"Excel-строка {er}: нет в текущей сессии «Макеты».")
+            continue
+
+        o_g = _cell_float(orig_df, "Год (шт)", i)
+        e_g = _cell_float(edited_df, "Год (шт)", i)
+        o_s = _cell_float(orig_df, "На листе", i)
+        e_s = _cell_float(edited_df, "На листе", i)
+        o_st = _cell_float(orig_df, "Склад (шт)", i)
+        e_st = max(0.0, _cell_float(edited_df, "Склад (шт)", i))
+
+        ch_vol = abs(e_g - o_g) > 1e-6 or abs(e_s - o_s) > 1e-6
+        ch_st = abs(e_st - o_st) > 1e-6
+
+        if not ch_vol and not ch_st:
+            continue
+
+        idx = er_to_idx[er]
+        row = dict(packaging_rows[idx])
+        gmp = (row.get("gmp_code") or "").strip().upper() or (
+            pkg_db.extract_gmp_code(row.get("name") or "", row.get("file") or "").upper()
+        )
+
+        if ch_vol:
+            row["qty_per_year"] = _pl_float_cell_to_qty_str(e_g)
+            row["qty_per_sheet"] = _pl_float_cell_to_qty_str(e_s)
+            packaging_rows[idx] = row
+            try:
+                pkg_db.upsert_all(conn, [row])
+            except Exception as ex:
+                msgs.append(f"Строка {er}: БД — {ex}")
+                continue
+            if excel_path is not None and excel_path.is_file():
+                try:
+                    save_one_row_to_excel(excel_path, row, db_path)
+                except Exception as ex:
+                    msgs.append(f"Строка {er}: Excel — {ex}")
+            n_vol += 1
+
+        if ch_st:
+            if gmp:
+                stock_batch.append({"gmp_code": gmp, "qty": e_st})
+            else:
+                msgs.append(f"Строка {er}: склад не сохранён — нет GMP-кода в названии или файле.")
+
+    n_stock = 0
+    if stock_batch:
+        try:
+            n_stock = pkg_db.upsert_stock_batch(conn, stock_batch, source="planner_manual")
+        except Exception as ex:
+            msgs.append(f"Склад: {ex}")
+
+    return n_vol, n_stock, msgs
+
+
+# Чекбоксы доплат к печати в планировщике (коды = print_finish_extras.code)
+_PL_PRINT_FIN_CHECK_KEYS: dict[str, str] = {
+    "lac_uv": "pl_fin_lac_uv",
+    "lac_wb": "pl_fin_lac_wb",
+    "foil": "pl_fin_foil",
+    "pantone_plus1": "pl_fin_pantone_plus1",
+}
+
+
+def _pl_editable_section_title(text: str) -> None:
+    """Заголовок блока с редактируемыми полями (зелёная акцентная полоса)."""
+    st.markdown(
+        '<p style="color:#1b5e20;font-weight:600;font-size:1.05rem;margin:0.35rem 0 0.55rem 0;'
+        'border-left:4px solid #43a047;padding-left:10px;">'
+        + html.escape(text)
+        + "</p>",
+        unsafe_allow_html=True,
+    )
+
+
+def _pl_sum_enabled_print_extras(
+    extras: list[dict[str, Any]],
+) -> tuple[float, list[dict[str, Any]]]:
+    """Сумма доплат за 1 лист по включённым чекбоксам + строки для разбора в анализе цен."""
+    total = 0.0
+    breakdown: list[dict[str, Any]] = []
+    for row in extras:
+        code = str(row.get("code") or "")
+        key = _PL_PRINT_FIN_CHECK_KEYS.get(code)
+        if not key:
+            continue
+        amt = float(row.get("extra_per_sheet") or 0.0)
+        on = bool(st.session_state.get(key, False))
+        if on:
+            total += amt
+        breakdown.append({
+            "code": code,
+            "label": row.get("label") or code,
+            "per_sheet": amt,
+            "enabled": on,
+        })
+    return total, breakdown
+
+
 def _render_volume_analysis(
     box_rows: list[dict[str, Any]],
     monthly_db: list[dict[str, Any]],
     rows_by_er: dict[int, dict[str, Any]],
     size_groups: list[dict[str, Any]] | None = None,
+    *,
+    planner_conn: sqlite3.Connection | None = None,
+    excel_path: Path | None = None,
+    db_path: Path | None = None,
+    packaging_rows: list[dict[str, Any]] | None = None,
+    stock_by_gmp: dict[str, float] | None = None,
 ) -> None:
     """Блок «Анализ существующих объёмов» внутри вкладки Планировщик."""
     import pandas as pd
@@ -2533,10 +2671,23 @@ def _render_volume_analysis(
         st.info("Нет продукции с заполненным размером.")
         return
 
+    _can_edit_volumes = (
+        planner_conn is not None
+        and packaging_rows is not None
+        and len(packaging_rows) > 0
+    )
+    _raw_st = stock_by_gmp if stock_by_gmp is not None else {}
+    _stock_lookup = {(str(k).strip().upper()): float(v) for k, v in _raw_st.items() if k}
+
     with st.expander(
         f"Анализ существующих объёмов ({len(size_groups)} размеров, {len(box_rows)} позиций)",
         expanded=False,
     ):
+        if _can_edit_volumes:
+            st.caption(
+                "В детализации по размеру можно вручную изменить **годовой объём**, **кол-во на листе** и **склад (шт)**; "
+                "кнопка «Записать» сохраняет объёмы в SQLite и Excel, склад — в таблицу остатков по GMP."
+            )
         monthly_by_er: dict[int, list[dict[str, Any]]] = defaultdict(list)
         for m in monthly_db:
             monthly_by_er[int(m["excel_row"])].append(m)
@@ -2581,6 +2732,11 @@ def _render_volume_analysis(
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
         with st.expander("Детализация по каждому размеру", expanded=False):
+            import hashlib as _hashlib_vol
+
+            if _can_edit_volumes:
+                _pl_editable_section_title("Объёмы и склад по размеру (редактируемые столбцы)")
+
             for sg in size_groups:
                 sk = sg["size_key"]
                 sk_disp = pp.size_key_display(sk)
@@ -2604,57 +2760,93 @@ def _render_volume_analysis(
                     for m in sorted(er_monthly, key=lambda x: (x["year"], x["month"])):
                         months_with_data.append(f"{m['month']:02d}/{m['year']}: {int(m['qty'])}")
 
+                    gmp_raw = (full.get("gmp_code") or "").strip() or pkg_db.extract_gmp_code(
+                        full.get("name") or "", full.get("file") or ""
+                    )
+                    gmp_u = gmp_raw.upper() if gmp_raw else ""
+                    stock_val = float(_stock_lookup.get(gmp_u, 0.0)) if gmp_u else 0.0
+
                     detail_rows.append({
                         "er": er,
+                        "GMP": gmp_u or "—",
                         "Название": name,
                         "Вид": kind,
-                        "Год. объём": int(annual) if annual else "—",
-                        "На листе": int(per_sheet) if per_sheet else "—",
-                        "Помесячно (сумма)": int(monthly_total) if monthly_total else "—",
+                        "Год (шт)": float(annual) if annual else 0.0,
+                        "На листе": float(per_sheet) if per_sheet else 0.0,
+                        "Склад (шт)": stock_val,
+                        "Помесячно (сумма)": int(monthly_total) if monthly_total else 0,
                         "Помесячные данные": "; ".join(months_with_data) if months_with_data else "—",
                     })
 
-                st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
+                df_detail = pd.DataFrame(detail_rows)
+                _h = _hashlib_vol.md5(str(sk).encode("utf-8")).hexdigest()[:12]
+
+                if _can_edit_volumes:
+                    edited = st.data_editor(
+                        df_detail,
+                        column_config={
+                            "er": st.column_config.NumberColumn("Excel-стр.", disabled=True, format="%d"),
+                            "GMP": st.column_config.TextColumn("GMP", disabled=True, width="small"),
+                            "Название": st.column_config.TextColumn("Название", disabled=True, width="large"),
+                            "Вид": st.column_config.TextColumn("Вид", disabled=True, width="small"),
+                            "Год (шт)": st.column_config.NumberColumn("Год (шт)", min_value=0.0, step=1.0, format="%d"),
+                            "На листе": st.column_config.NumberColumn("На листе", min_value=0.0, step=1.0, format="%d"),
+                            "Склад (шт)": st.column_config.NumberColumn("Склад (шт)", min_value=0.0, step=1.0, format="%d"),
+                            "Помесячно (сумма)": st.column_config.NumberColumn(
+                                "Помес. сумма", disabled=True, format="%d"
+                            ),
+                            "Помесячные данные": st.column_config.TextColumn("Помесячные данные", disabled=True),
+                        },
+                        hide_index=True,
+                        num_rows="fixed",
+                        use_container_width=True,
+                        key=f"pl_vol_ed_{_h}",
+                    )
+                    if st.button(
+                        f"Записать правки для {sk_disp}",
+                        key=f"pl_vol_save_{_h}",
+                        type="primary",
+                    ):
+                        n_v, n_st, mlist = _pl_apply_volume_sheet_stock_edits(
+                            edited,
+                            df_detail,
+                            excel_path=excel_path,
+                            db_path=db_path,
+                            conn=planner_conn,
+                            packaging_rows=packaging_rows,
+                        )
+                        for m in mlist:
+                            st.warning(m)
+                        if n_v or n_st:
+                            st.success(
+                                f"Сохранено: объёмы — {n_v} поз., склад — {n_st} GMP."
+                            )
+                            st.rerun()
+                        elif not mlist:
+                            st.info("Нет изменений для записи.")
+                else:
+                    disp_rows: list[dict[str, Any]] = []
+                    for row in detail_rows:
+                        g = float(row.get("Год (шт)") or 0)
+                        s = float(row.get("На листе") or 0)
+                        mt = int(row.get("Помесячно (сумма)") or 0)
+                        disp_rows.append({
+                            "Название": row["Название"],
+                            "Вид": row["Вид"],
+                            "Год. объём": int(g) if g else "—",
+                            "На листе": int(s) if s else "—",
+                            "Склад (шт)": int(float(row.get("Склад (шт)") or 0)),
+                            "Помесячно (сумма)": mt if mt else "—",
+                            "Помесячные данные": row["Помесячные данные"],
+                        })
+                    st.dataframe(pd.DataFrame(disp_rows), use_container_width=True, hide_index=True)
+
                 st.divider()
 
     st.divider()
 
 
-def _auto_match_cg(
-    cg_knives: list[dict[str, Any]],
-    rows_by_er: dict[int, dict[str, Any]],
-    box_rows: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Автосопоставление ножей CG с продуктами нашей БД."""
-    result: list[dict[str, Any]] = []
-    matched_ers: set[int] = set()
-    for k in cg_knives:
-        cg_name = (k.get("name") or "").lower().replace("-", "").replace(" ", "")
-        m = re.search(r'\(([^)]+)\)', k.get("name") or "")
-        hint = m.group(1).strip().lower().replace("-", "").replace(" ", "") if m else cg_name[:20]
-        if len(hint) < 3:
-            continue
-        best_er: int | None = None
-        best_score = 0
-        for r in box_rows:
-            er = int(r["excel_row"])
-            if er in matched_ers:
-                continue
-            full = rows_by_er.get(er) or r
-            db_name = (full.get("name") or "").lower().replace("-", "").replace(" ", "")
-            if hint[:8] in db_name or db_name[:10] in hint:
-                score = len(set(hint) & set(db_name))
-                if score > best_score:
-                    best_score = score
-                    best_er = er
-        if best_er is not None and best_score >= 4:
-            result.append({
-                "excel_row": best_er,
-                "cutit_no": k["cutit_no"],
-                "confirmed": 0,
-            })
-            matched_ers.add(best_er)
-    return result
+_auto_match_cg = auto_match_cg
 
 
 def _parse_packaging_price(val: Any) -> float | None:
@@ -2719,6 +2911,7 @@ def render_planner_tab(
     packaging_rows: list[dict[str, Any]],
     db_path: Path,
     pdf_dir: Path | None = None,
+    excel_path: Path | None = None,
 ) -> None:
     """Планировщик оптимизации печати (четвёртая вкладка)."""
     import hashlib as _hashlib_pl
@@ -2731,7 +2924,8 @@ def render_planner_tab(
     st.title("Планировщик оптимизации печати")
     st.caption(
         "Анализирует существующие объёмы, извлекает ножи из PDF-макетов, "
-        "рассчитывает оптимальную раскладку разных видов упаковки одного размера на печатный лист."
+        "рассчитывает оптимальную раскладку разных видов упаковки одного размера на печатный лист. "
+        "Заголовки с **зелёной полосой слева** отмечают блоки с редактируемыми полями."
     )
 
     rows_by_er_session = {int(r["excel_row"]): r for r in packaging_rows}
@@ -2839,7 +3033,15 @@ def render_planner_tab(
         st.session_state[_PKG_KNIFE_PROPAGATE_SESSION_KEY] = True
 
     _render_volume_analysis(
-        box_rows_for_planner, monthly_db, rows_by_er, size_groups=size_groups
+        box_rows_for_planner,
+        monthly_db,
+        rows_by_er,
+        size_groups=size_groups,
+        planner_conn=_planner_conn,
+        excel_path=excel_path,
+        db_path=db_path if db_path.is_file() else None,
+        packaging_rows=packaging_rows,
+        stock_by_gmp=_stock_db,
     )
 
     # ── Складские остатки ──
@@ -2850,13 +3052,116 @@ def render_planner_tab(
         st.caption(
             "Загрузите Excel-файл с остатками на складе. "
             "Файл должен содержать колонку с GMP-кодом (например, ВУМ-169-01) "
-            "и колонку с количеством. Система найдёт их автоматически."
+            "и колонку с количеством. Система найдёт их автоматически. "
+            "Скачайте шаблон с предзаполненными GMP-кодами из каталога."
         )
-        _stock_file = st.file_uploader(
-            "Excel-файл с остатками",
-            type=["xlsx", "xls"],
-            key="pl_stock_upload",
-        )
+
+        # ── Шаблон для загрузки остатков ──
+        def _build_stock_template() -> bytes:
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+            from openpyxl.worksheet.datavalidation import DataValidation
+            from io import BytesIO
+
+            _STOCK_UNITS = ("шт.", "кг", "г", "л", "мл")
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Остатки на складе"
+
+            hdr_font = Font(name="Calibri", bold=True, size=11, color="FFFFFF")
+            hdr_fill = PatternFill(start_color="2F5496", end_color="2F5496", fill_type="solid")
+            hdr_align = Alignment(horizontal="center", vertical="center")
+            thin_border = Border(
+                left=Side(style="thin", color="B4C6E7"),
+                right=Side(style="thin", color="B4C6E7"),
+                top=Side(style="thin", color="B4C6E7"),
+                bottom=Side(style="thin", color="B4C6E7"),
+            )
+
+            headers_tpl = ["GMP-код", "Название", "Остаток", "Ед. изм."]
+            for ci, h in enumerate(headers_tpl, start=1):
+                cell = ws.cell(row=1, column=ci, value=h)
+                cell.font = hdr_font
+                cell.fill = hdr_fill
+                cell.alignment = hdr_align
+                cell.border = thin_border
+
+            gmp_set: dict[str, str] = {}
+            for r in packaging_rows:
+                g = (r.get("gmp_code") or "").strip().upper()
+                if not g:
+                    g = pkg_db.extract_gmp_code(
+                        r.get("name") or "", r.get("file") or ""
+                    ).strip().upper()
+                if g and g not in gmp_set:
+                    gmp_set[g] = (r.get("name") or "").strip()[:80]
+
+            unit_list = ",".join(_STOCK_UNITS)
+            dv_unit = DataValidation(
+                type="list",
+                formula1=f'"{unit_list}"',
+                allow_blank=True,
+                showDropDown=False,
+            )
+            dv_unit.error = "Выберите единицу из списка"
+            dv_unit.errorTitle = "Недопустимая единица"
+            dv_unit.prompt = "Выберите единицу измерения"
+            dv_unit.promptTitle = "Ед. изм."
+            ws.add_data_validation(dv_unit)
+
+            data_font = Font(name="Calibri", size=11)
+            qty_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+            for ri, (gmp, name) in enumerate(sorted(gmp_set.items()), start=2):
+                c1 = ws.cell(row=ri, column=1, value=gmp)
+                c1.font = data_font
+                c1.border = thin_border
+                c2 = ws.cell(row=ri, column=2, value=name)
+                c2.font = data_font
+                c2.border = thin_border
+                c3 = ws.cell(row=ri, column=3, value=_stock_db.get(gmp, 0))
+                c3.font = data_font
+                c3.fill = qty_fill
+                c3.border = thin_border
+                c3.number_format = "#,##0.##"
+                c4 = ws.cell(row=ri, column=4, value="шт.")
+                c4.font = data_font
+                c4.border = thin_border
+                c4.alignment = Alignment(horizontal="center")
+                dv_unit.add(c4)
+
+            last_row = max(len(gmp_set) + 1, 2)
+            for extra_ri in range(last_row + 1, last_row + 51):
+                c4e = ws.cell(row=extra_ri, column=4)
+                dv_unit.add(c4e)
+
+            ws.column_dimensions["A"].width = 18
+            ws.column_dimensions["B"].width = 50
+            ws.column_dimensions["C"].width = 14
+            ws.column_dimensions["D"].width = 12
+            ws.auto_filter.ref = f"A1:D{last_row}"
+
+            buf = BytesIO()
+            wb.save(buf)
+            return buf.getvalue()
+
+        _tpl_col, _upl_col = st.columns([1, 2], gap="small")
+        with _tpl_col:
+            st.download_button(
+                "Скачать шаблон",
+                data=_build_stock_template(),
+                file_name="stock_template.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="pl_stock_template_dl",
+                use_container_width=True,
+                help="Excel-шаблон с GMP-кодами из каталога. Заполните колонку «Остаток» и загрузите обратно.",
+            )
+        with _upl_col:
+            _stock_file = st.file_uploader(
+                "Excel-файл с остатками",
+                type=["xlsx", "xls"],
+                key="pl_stock_upload",
+            )
         if _stock_file is not None:
             try:
                 import openpyxl
@@ -2867,6 +3172,8 @@ def render_planner_tab(
                 import re as _re_stock
                 gmp_col_idx: int | None = None
                 qty_col_idx: int | None = None
+                unit_col_idx: int | None = None
+                name_col_idx: int | None = None
                 for ci, h in enumerate(headers):
                     hl = h.lower()
                     if gmp_col_idx is None and any(
@@ -2882,6 +3189,16 @@ def render_planner_tab(
                         for kw in ("кол", "qty", "остат", "stock", "stoc", "cantitat", "buc")
                     ):
                         qty_col_idx = ci
+                    if unit_col_idx is None and any(
+                        kw in hl
+                        for kw in ("ед", "unit", "изм", "um", "măsur")
+                    ):
+                        unit_col_idx = ci
+                    if name_col_idx is None and any(
+                        kw in hl
+                        for kw in ("назван", "name", "наименован", "denumir", "produs")
+                    ):
+                        name_col_idx = ci
 
                 if gmp_col_idx is None or qty_col_idx is None:
                     for ri, row_vals in enumerate(ws.iter_rows(min_row=2, max_row=5, values_only=True)):
@@ -2910,6 +3227,7 @@ def render_planner_tab(
                 elif qty_col_idx is None:
                     st.error("Не найдена колонка с количеством.")
                 else:
+                    _valid_units = {"шт.", "кг", "г", "л", "мл"}
                     wb2 = openpyxl.load_workbook(_stock_file, data_only=True, read_only=True)
                     ws2 = wb2.active
                     _stock_entries: list[dict[str, Any]] = []
@@ -2936,15 +3254,36 @@ def render_planner_tab(
                             continue
                         if qty < 0:
                             continue
-                        _stock_entries.append({"gmp_code": code, "qty": qty})
+                        unit_val = "шт."
+                        if unit_col_idx is not None and unit_col_idx < len(vals):
+                            raw_unit = str(vals[unit_col_idx] or "").strip().lower().rstrip(".")
+                            for vu in _valid_units:
+                                if raw_unit == vu.rstrip(".").lower():
+                                    unit_val = vu
+                                    break
+                        name_val = ""
+                        if name_col_idx is not None and name_col_idx < len(vals):
+                            name_val = str(vals[name_col_idx] or "").strip()[:80]
+                        _stock_entries.append({
+                            "gmp_code": code, "qty": qty, "unit": unit_val, "name": name_val,
+                        })
                         if len(_preview_rows) < 20:
-                            _preview_rows.append({"GMP-код": code, "Остаток": int(qty)})
+                            _preview_rows.append({
+                                "GMP-код": code,
+                                "Название": name_val or "—",
+                                "Остаток": qty if unit_val != "шт." else int(qty),
+                                "Ед. изм.": unit_val,
+                            })
                     wb2.close()
 
+                    _cols_found = [f"«{headers[gmp_col_idx]}» → код", f"«{headers[qty_col_idx]}» → кол-во"]
+                    if unit_col_idx is not None:
+                        _cols_found.append(f"«{headers[unit_col_idx]}» → ед. изм.")
+                    if name_col_idx is not None:
+                        _cols_found.append(f"«{headers[name_col_idx]}» → название")
                     st.info(
                         f"Найдено **{len(_stock_entries)}** позиций "
-                        f"(колонки: «{headers[gmp_col_idx]}» → код, "
-                        f"«{headers[qty_col_idx]}» → кол-во)."
+                        f"(колонки: {', '.join(_cols_found)})."
                     )
                     if _preview_rows:
                         st.dataframe(
@@ -2991,126 +3330,7 @@ def render_planner_tab(
         _cg_file = st.file_uploader("Excel CG Preț", type=["xlsx", "xls"], key="pl_cg_upload")
         if _cg_file is not None:
             try:
-                import openpyxl as _cg_xl
-                _cg_wb = _cg_xl.load_workbook(_cg_file, data_only=True, read_only=True)
-                _cg_ws = None
-                for _sn in _cg_wb.sheetnames:
-                    if "cutii" in _sn.lower():
-                        _cg_ws = _cg_wb[_sn]
-                        break
-                if _cg_ws is None:
-                    _cg_ws = _cg_wb.active
-
-                _TIER_COLS = {
-                    "lac_wb": [
-                        (4, 1000, 4000),
-                        (5, 5000, 10000),
-                        (6, 11000, 50000),
-                        (7, 50000, None),
-                        (8, 100000, None),
-                        (9, 200000, None),
-                    ],
-                    "uv_no_foil": [
-                        (10, 1000, 4000),
-                        (11, 5000, 10000),
-                        (12, 11000, 50000),
-                        (13, 50000, None),
-                    ],
-                    "uv_foil": [
-                        (14, 1000, 4000),
-                        (15, 5000, 10000),
-                        (16, 11000, 50000),
-                        (17, 50000, None),
-                    ],
-                }
-
-                def _clean_price_token(tok: str) -> float | None:
-                    """Извлечь числовое значение цены из одного фрагмента."""
-                    t = re.sub(r'\([^)]*\)', '', tok).strip()
-                    t = t.split("/")[0].strip()
-                    t = t.replace("\u00a0", "").replace(" ", "")
-                    m = re.match(r'^[\d,\.]+', t)
-                    if not m:
-                        return None
-                    t = m.group(0).replace(",", ".").strip(".").strip()
-                    if not t:
-                        return None
-                    try:
-                        v = float(t)
-                        return v if v > 0.5 else None
-                    except (ValueError, TypeError):
-                        return None
-
-                def _parse_cg_price(val: Any) -> tuple[float | None, float | None]:
-                    """Парсинг ячейки CG: возвращает (old_price, new_price).
-
-                    Первое число — старая цена, последнее — новая.
-                    Если значение одно, оно и старая и новая.
-                    """
-                    if val is None:
-                        return (None, None)
-                    if isinstance(val, (int, float)):
-                        v = float(val) if val > 0 else None
-                        return (v, v)
-                    s = str(val).strip()
-                    if not s:
-                        return (None, None)
-                    lines = [ln.strip() for ln in s.replace("\n", "\n").split("\n") if ln.strip()]
-                    if len(lines) == 1:
-                        parts = re.split(r'\s{3,}', lines[0])
-                        if len(parts) > 1:
-                            lines = [p.strip() for p in parts if p.strip()]
-                    nums: list[float] = []
-                    for ln in lines:
-                        p = _clean_price_token(ln)
-                        if p is not None and p >= 5.0:
-                            nums.append(p)
-                    if not nums:
-                        return (None, None)
-                    if len(nums) == 1:
-                        return (nums[0], nums[0])
-                    return (nums[0], nums[-1])
-
-                _parsed_knives: list[dict[str, Any]] = []
-                _parsed_prices: list[dict[str, Any]] = []
-                _current_cat = ""
-                for _ri, _row in enumerate(_cg_ws.iter_rows(min_row=4, values_only=True)):
-                    _vals = list(_row)
-                    _col_a = str(_vals[0] or "").strip() if _vals else ""
-                    _col_b = str(_vals[1] or "").strip() if len(_vals) > 1 else ""
-                    _col_c = str(_vals[2] or "").strip() if len(_vals) > 2 else ""
-                    _col_d = str(_vals[3] or "").strip() if len(_vals) > 3 else ""
-
-                    if _col_a and not _col_a.replace(".", "").replace(" ", "").isdigit():
-                        _current_cat = _col_a
-                        continue
-                    if not _col_b:
-                        continue
-
-                    cutit = _col_b.split("\n")[0].strip()
-                    if not cutit:
-                        continue
-                    _parsed_knives.append({
-                        "cutit_no": cutit,
-                        "name": _col_c.replace("\n", " ").strip() if _col_c else "",
-                        "category": _current_cat,
-                        "cardboard": _col_d,
-                    })
-
-                    for ft, tier_cols in _TIER_COLS.items():
-                        for col_idx, mn, mx in tier_cols:
-                            if col_idx < len(_vals):
-                                pv_old, pv_new = _parse_cg_price(_vals[col_idx])
-                                if pv_new is not None:
-                                    _parsed_prices.append({
-                                        "cutit_no": cutit,
-                                        "finish_type": ft,
-                                        "min_qty": mn,
-                                        "max_qty": mx,
-                                        "price_per_1000": pv_new,
-                                        "price_old_per_1000": pv_old,
-                                    })
-                _cg_wb.close()
+                _parsed_knives, _parsed_prices = parse_cg_pret_workbook(_cg_file)
 
                 st.info(f"Разобрано **{len(_parsed_knives)}** ножей, **{len(_parsed_prices)}** ценовых ступеней.")
 
@@ -3510,18 +3730,58 @@ def render_planner_tab(
         elif not size_groups:
             st.info("Нет групп размеров — загрузите данные в базу.")
 
-    st.subheader("Параметры печатного листа")
+    _pl_editable_section_title("Параметры печатного листа")
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
-        sheet_w = st.number_input("Ширина, мм", min_value=50.0, max_value=2000.0, value=700.0, step=1.0, key="pl_sheet_w")
+        sheet_w = st.number_input(
+            "Ширина, мм",
+            min_value=50.0,
+            max_value=2000.0,
+            value=700.0,
+            step=1.0,
+            key="pl_sheet_w",
+            help="Редактируемо · формат печатного листа",
+        )
     with c2:
-        sheet_h = st.number_input("Высота, мм", min_value=50.0, max_value=2000.0, value=1000.0, step=1.0, key="pl_sheet_h")
+        sheet_h = st.number_input(
+            "Высота, мм",
+            min_value=50.0,
+            max_value=2000.0,
+            value=1000.0,
+            step=1.0,
+            key="pl_sheet_h",
+            help="Редактируемо · формат печатного листа",
+        )
     with c3:
-        margin_mm = st.number_input("Поле, мм", min_value=0.0, max_value=50.0, value=5.0, step=0.5, key="pl_margin")
+        margin_mm = st.number_input(
+            "Поле, мм",
+            min_value=0.0,
+            max_value=50.0,
+            value=5.0,
+            step=0.5,
+            key="pl_margin",
+            help="Редактируемо · отступ от края листа",
+        )
     with c4:
-        gap_mm = st.number_input("Зазор X, мм", min_value=-100.0, max_value=40.0, value=2.0, step=0.5, key="pl_gap_x")
+        gap_mm = st.number_input(
+            "Зазор X, мм",
+            min_value=-100.0,
+            max_value=40.0,
+            value=2.0,
+            step=0.5,
+            key="pl_gap_x",
+            help="Редактируемо · зазор между оттисками по X",
+        )
     with c5:
-        gap_y_mm = st.number_input("Зазор Y, мм", min_value=-100.0, max_value=40.0, value=2.0, step=0.5, key="pl_gap_y")
+        gap_y_mm = st.number_input(
+            "Зазор Y, мм",
+            min_value=-100.0,
+            max_value=40.0,
+            value=2.0,
+            step=0.5,
+            key="pl_gap_y",
+            help="Редактируемо · зазор между оттисками по Y",
+        )
     sheet_params = pp.SheetParams(
         width_mm=float(sheet_w),
         height_mm=float(sheet_h),
@@ -3531,7 +3791,8 @@ def render_planner_tab(
     )
 
     st.divider()
-    with st.expander("Тарифы печати (ступенчатые)", expanded=False):
+    with st.expander("Тарифы печати (ступенчатые и доплаты за отделку)", expanded=False):
+        _pl_editable_section_title("Ступени: тираж листов → цена за лист")
         _tariffs_db: list[dict[str, Any]] = []
         if _planner_conn is not None:
             try:
@@ -3560,13 +3821,30 @@ def render_planner_tab(
             hide_index=True,
             key="pl_tariff_editor",
             column_config={
-                "От (листов)": st.column_config.NumberColumn("От (листов)", min_value=1, step=1, format="%d"),
-                "До (листов)": st.column_config.NumberColumn("До (листов)", min_value=1, step=1, format="%d",
-                    help="999999 = без ограничения (∞)"),
-                "Цена за лист": st.column_config.NumberColumn("Цена за лист", min_value=0.0, step=0.1, format="%.2f"),
+                "От (листов)": st.column_config.NumberColumn(
+                    "От (листов)",
+                    min_value=1,
+                    step=1,
+                    format="%d",
+                    help="Редактируемо · нижняя граница тиража (листов)",
+                ),
+                "До (листов)": st.column_config.NumberColumn(
+                    "До (листов)",
+                    min_value=1,
+                    step=1,
+                    format="%d",
+                    help="Редактируемо · 999999 = без верхней границы",
+                ),
+                "Цена за лист": st.column_config.NumberColumn(
+                    "Цена за лист",
+                    min_value=0.0,
+                    step=0.1,
+                    format="%.2f",
+                    help="Редактируемо · базовая цена листа на этой ступени",
+                ),
             },
         )
-        if st.button("Сохранить тарифы", key="pl_save_tariffs"):
+        if st.button("Сохранить ступени", key="pl_save_tariffs"):
             _new_tariffs: list[dict[str, Any]] = []
             for _, r in _te_edited.iterrows():
                 mn = int(r["От (листов)"])
@@ -3577,11 +3855,69 @@ def render_planner_tab(
             if _planner_conn is not None:
                 try:
                     pkg_db.save_tariffs(_planner_conn, _new_tariffs)
-                    st.success(f"Тарифы сохранены ({len(_new_tariffs)} ступеней).")
+                    st.success(f"Ступени сохранены ({len(_new_tariffs)}).")
                 except Exception as e:
                     st.error(f"Ошибка сохранения тарифов: {e}")
             else:
                 st.warning("Файл БД не найден — тарифы не сохранены.")
+
+        st.divider()
+        _pl_editable_section_title("Доплаты за отделку (на 1 печатный лист)")
+        _xfe_source: list[dict[str, Any]] = []
+        if _planner_conn is not None:
+            try:
+                _xfe_source = pkg_db.load_print_finish_extras(_planner_conn)
+            except Exception:
+                _xfe_source = []
+        if not _xfe_source:
+            _xfe_source = [dict(x) for x in pkg_db.DEFAULT_PRINT_FINISH_EXTRAS]
+        _xfe_df = pd.DataFrame(
+            [
+                {
+                    "Код": r["code"],
+                    "Опция": r["label"],
+                    "Доплата за лист": float(r["extra_per_sheet"]),
+                }
+                for r in _xfe_source
+            ]
+        )
+        _xfe_edited = st.data_editor(
+            _xfe_df,
+            num_rows="fixed",
+            use_container_width=True,
+            hide_index=True,
+            key="pl_finish_extras_editor",
+            column_config={
+                "Код": st.column_config.TextColumn("Код", disabled=True, width="small"),
+                "Опция": st.column_config.TextColumn(
+                    "Опция",
+                    help="Редактируемо · подпись в отчётах",
+                ),
+                "Доплата за лист": st.column_config.NumberColumn(
+                    "Доплата / лист",
+                    min_value=0.0,
+                    step=0.05,
+                    format="%.2f",
+                    help="Редактируемо · добавляется к каждому отпечатанному листу при включённой галочке",
+                ),
+            },
+        )
+        if st.button("Сохранить доплаты за отделку", key="pl_save_finish_extras"):
+            if _planner_conn is None:
+                st.warning("Файл БД не найден — доплаты не сохранены.")
+            else:
+                try:
+                    _xfe_out: list[dict[str, Any]] = []
+                    for _, r in _xfe_edited.iterrows():
+                        _xfe_out.append({
+                            "code": str(r["Код"]),
+                            "label": str(r["Опция"]),
+                            "extra_per_sheet": float(r["Доплата за лист"]),
+                        })
+                    pkg_db.save_print_finish_extras(_planner_conn, _xfe_out)
+                    st.success(f"Доплаты сохранены ({len(_xfe_out)} опций).")
+                except Exception as e:
+                    st.error(f"Ошибка сохранения доплат: {e}")
 
     _tariffs_for_plan: list[dict[str, Any]] = []
     if _planner_conn is not None:
@@ -3589,6 +3925,36 @@ def render_planner_tab(
             _tariffs_for_plan = pkg_db.load_tariffs(_planner_conn)
         except Exception:
             pass
+
+    _extras_for_plan: list[dict[str, Any]] = [dict(x) for x in pkg_db.DEFAULT_PRINT_FINISH_EXTRAS]
+    if _planner_conn is not None:
+        try:
+            _extras_for_plan = pkg_db.load_print_finish_extras(_planner_conn)
+        except Exception:
+            pass
+
+    st.divider()
+    _pl_editable_section_title("Учитывать доплаты в расчёте стоимости")
+    st.caption(
+        "Отметьте лак UV, лак WB, фольгу, Pantone +1 — суммы из таблицы «Доплата / лист» умножаются на число листов "
+        "и показываются в анализе цен ниже (сборный и раздельный тираж, CG и ступени)."
+    )
+    _xcols = st.columns(4)
+    _sorted_extras = sorted(_extras_for_plan, key=lambda x: str(x.get("code") or ""))
+    _xi = 0
+    for row in _sorted_extras:
+        _ck = _PL_PRINT_FIN_CHECK_KEYS.get(str(row.get("code") or ""))
+        if _ck is None:
+            continue
+        _amt = float(row.get("extra_per_sheet") or 0.0)
+        _lab = str(row.get("label") or row.get("code") or "")
+        with _xcols[_xi % 4]:
+            st.checkbox(
+                f"{_lab} (+{_amt:.2f}/лист)",
+                key=_ck,
+                help="Включает эту доплату ко всем расчётам листов в этом размере.",
+            )
+        _xi += 1
 
     # ── Выбор размера для оптимизации ──
     st.subheader("Оптимизация печати по размеру")
@@ -3653,6 +4019,77 @@ def render_planner_tab(
     _sel_items = _sel_sg["rows"]
 
     st.markdown(f"#### Размер {_sel_sk_disp}: {len(_sel_items)} видов продукции")
+
+    if db_path.is_file():
+        import importlib
+
+        import packaging_profile_excel as pprof
+
+        # Streamlit не перезагружает импортированные модули при правках .py — иначе остаётся старая сборка Excel.
+        importlib.reload(pprof)
+
+        if "pl_profile_doc_code" not in st.session_state:
+            st.session_state["pl_profile_doc_code"] = "OM/ПУМ-192-01-373"
+        if "pl_profile_report_year" not in st.session_state:
+            st.session_state["pl_profile_report_year"] = int(date.today().year)
+        st.markdown("##### Экспорт Excel «профиль» этой группы")
+        st.caption(
+            "Шапка Balkan, **широкая таблица до столбца Z** (№, GMP, вид, размер, нож CG, кол-во на листе из макетов, €/1000 CG, "
+            "подрядчики 1–5, годовой объём, Янв–Дек), затем анализ и график. "
+            "Файл **packaging_profile_….xlsx** только для **этой размерной группы**. **Вся база** — кнопка «Профиль Excel» в шапке рядом с «Скачать Excel»; исходный макет — по «Скачать Excel»."
+        )
+        _pr_c1, _pr_c2, _pr_c3 = st.columns([2, 2, 1])
+        with _pr_c1:
+            st.text_input(
+                "Codul documentului (шапка Excel)",
+                key="pl_profile_doc_code",
+                help="Серый блок справа в шапке, как на фирменном бланке.",
+            )
+        _pl_prof_fin_labels = {
+            "lac_wb": "Lac WB (водный лак)",
+            "uv_no_foil": "UV без фольги",
+            "uv_foil": "UV с фольгой",
+        }
+        with _pr_c2:
+            st.selectbox(
+                "Отделка CG для столбца €/1000",
+                options=list(_pl_prof_fin_labels.keys()),
+                format_func=lambda k: _pl_prof_fin_labels[k],
+                key="pl_profile_finish_pick",
+            )
+        with _pr_c3:
+            st.number_input(
+                "Год (колонки месяцев)",
+                min_value=2000,
+                max_value=2100,
+                step=1,
+                key="pl_profile_report_year",
+                help="Помесячные объёмы из БД за этот год в столбцах Янв–Дек.",
+            )
+        try:
+            _finish_profile = str(st.session_state.get("pl_profile_finish_pick") or "lac_wb")
+            _prof_bytes = pprof.build_profile_workbook_bytes(
+                db_path=db_path,
+                size_key=_sel_sk,
+                size_key_display_override=_sel_sk_disp,
+                group_rows=list(_sel_items),
+                rows_by_er=rows_by_er,
+                sheet_params=sheet_params,
+                document_code=str(st.session_state.get("pl_profile_doc_code") or ""),
+                finish_code=_finish_profile,
+                logo_path=None,
+                report_year=int(st.session_state.get("pl_profile_report_year") or date.today().year),
+            )
+            _safe_fn = re.sub(r"[^\w\-.]+", "_", _sel_sk)[:80]
+            st.download_button(
+                label="Скачать Excel профиль (эта группа)",
+                data=_prof_bytes,
+                file_name=f"packaging_profile_{_safe_fn}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="pl_download_profile_xlsx",
+            )
+        except Exception as _e_prof:
+            st.warning(f"Не удалось сформировать профиль Excel: {_e_prof}")
 
     # ── Извлечение ножей из PDF (с кэшированием в session_state) ──
     _sel_ers = [int(r["excel_row"]) for r in _sel_items]
@@ -3844,7 +4281,7 @@ def render_planner_tab(
 
     # ── Оптимизация: распределение слотов по историческим объёмам ──
     st.divider()
-    st.subheader("Оптимизация раскладки")
+    _pl_editable_section_title("Оптимизация раскладки (период, тип лакирования CG)")
 
     # Определим cutit_no для текущего размера через cg_mapping
     _sel_cutit: str | None = None
@@ -3932,19 +4369,37 @@ def render_planner_tab(
         if stock > 0:
             _total_stock_deducted += min(stock, period_demand)
 
+    _pl_demand_is_synthetic = False
     if not demand_by_er or all(v == 0 for v in demand_by_er.values()):
         if _total_stock_deducted > 0:
             st.success(
                 f"Потребность за период полностью покрыта складскими остатками "
                 f"({int(_total_stock_deducted):,} шт.). Печать не требуется."
             )
-        else:
-            st.warning(
-                "Нет данных об объёмах ни для одного вида этого размера. "
-                "Заполните «Кол-во в год» на вкладке «Макеты» или загрузите помесячные данные через Cutii."
-            )
-        _close_planner()
-        return
+            _close_planner()
+            return
+        st.warning(
+            "Нет данных об объёмах ни для одного вида этого размера. "
+            "Заполните «Кол-во в год» на вкладке «Макеты» или загрузите помесячные данные через Cutii."
+        )
+        if not st.checkbox(
+            "Продолжить без объёмов: равномерная потребность по выбранным видам (только для раскладки и макета)",
+            key="pl_continue_no_volume",
+        ):
+            _close_planner()
+            return
+        _pl_demand_is_synthetic = True
+        annual_demand_by_er = {}
+        raw_demand_by_er = {}
+        demand_by_er = {}
+        _total_stock_deducted = 0.0
+        for r in _active_items:
+            er = int(r["excel_row"])
+            annual_demand_by_er[er] = 1.0
+        for er, annual in annual_demand_by_er.items():
+            period_demand = annual * _period_months / 12.0
+            raw_demand_by_er[er] = period_demand
+            demand_by_er[er] = period_demand
     if n_fit <= 0:
         st.warning("Не удалось рассчитать количество ячеек на листе для этого размера.")
         _close_planner()
@@ -3962,6 +4417,8 @@ def render_planner_tab(
     )
     if _total_stock_deducted > 0:
         _demand_caption += f" · Вычтено со склада: **{int(_total_stock_deducted):,}** шт."
+    if _pl_demand_is_synthetic:
+        _demand_caption += " · **Условная** потребность (одинаковая по видам, без учёта склада)."
     st.caption(_demand_caption)
 
     ers_sorted = sorted(demand_by_er.items(), key=lambda x: x[1], reverse=True)
@@ -4056,6 +4513,13 @@ def render_planner_tab(
         price_per_sheet = pkg_db.sheet_price(n_sheets, _tariffs_for_plan)
         total_cost = price_per_sheet * n_sheets
 
+    _extra_per_sheet, _extra_breakdown = _pl_sum_enabled_print_extras(_extras_for_plan)
+    _extra_total_combined = _extra_per_sheet * float(n_sheets)
+    total_cost = total_cost + _extra_total_combined
+    if _cg_p1000_old_combined is not None:
+        _total_cost_old = _total_cost_old + _extra_total_combined
+    price_per_sheet = total_cost / max(n_sheets, 1)
+
     # --- Расчёт раздельной печати (каждый вид отдельно) ---
     _sep_details: list[dict[str, Any]] = []
     sep_sheets = 0
@@ -4074,6 +4538,9 @@ def render_planner_tab(
         else:
             price_sep = pkg_db.sheet_price(sh_sep, _tariffs_for_plan)
             cost_sep = price_sep * sh_sep
+        _extra_sep = _extra_per_sheet * float(sh_sep)
+        cost_sep = cost_sep + _extra_sep
+        price_sep = cost_sep / max(sh_sep, 1)
         slots_combined = raw_slots[i]
         printed_combined = slots_combined * n_sheets
         cost_combined = (slots_combined / max(n_fit, 1)) * total_cost
@@ -4099,6 +4566,32 @@ def render_planner_tab(
     savings_pct = (savings / max(sep_cost, 0.01)) * 100
     cost_per_box_combined = total_cost / max(total_printed, 1)
     cost_per_box_separate = sep_cost / max(sum(d["sep_printed"] for d in _sep_details), 1)
+
+    _extras_sess_parts: list[str] = []
+    for _b in _extra_breakdown:
+        if _b.get("enabled") and float(_b.get("per_sheet") or 0) > 0:
+            _suf = " €/лист" if _use_cg_pricing else "/лист"
+            _extras_sess_parts.append(
+                f"{_b.get('label', '')} (+{float(_b.get('per_sheet') or 0):.2f}{_suf})"
+            )
+    st.session_state["pl_last_print_economics"] = {
+        "size_key": _sel_sk,
+        "size_disp": _sel_sk_disp,
+        "period": _period_label,
+        "n_sheets": int(n_sheets),
+        "sep_sheets": int(sep_sheets),
+        "total_cost": float(total_cost),
+        "sep_cost": float(sep_cost),
+        "savings": float(savings),
+        "savings_pct": float(savings_pct),
+        "cost_per_imprint_c": float(cost_per_box_combined),
+        "cost_per_imprint_s": float(cost_per_box_separate),
+        "use_cg": bool(_use_cg_pricing),
+        "extras_note": "; ".join(_extras_sess_parts),
+        "finish_label": _FINISH_LABELS.get(_sel_finish, _sel_finish or "")
+        if _use_cg_pricing
+        else "",
+    }
 
     # --- Метрики сборного тиража ---
     _pricing_label = (
@@ -4144,6 +4637,27 @@ def render_planner_tab(
             st.metric("Общая стоимость", f"{total_cost:,.2f}{_cost_unit}")
         with mc4:
             st.metric("Цена за оттиск", f"{cost_per_box_combined:.4f}{_cost_unit}")
+
+    with st.expander(
+        "Анализ цен: доплаты за отделку (лак UV / WB, фольга, Pantone +1)",
+        expanded=bool(_extra_total_combined > 0),
+    ):
+        _eab_rows: list[dict[str, Any]] = []
+        for b in _extra_breakdown:
+            _en = bool(b.get("enabled"))
+            _ps = float(b.get("per_sheet") or 0.0)
+            _row_tot = (_ps * float(n_sheets)) if _en else 0.0
+            _eab_rows.append({
+                "Опция": b.get("label") or b.get("code"),
+                "За 1 лист": round(_ps, 2),
+                "В расчёте": "да" if _en else "нет",
+                f"Сумма ({n_sheets} л.)": round(_row_tot, 2),
+            })
+        st.dataframe(pd.DataFrame(_eab_rows), use_container_width=True, hide_index=True)
+        st.caption(
+            f"Дополнительно к базе (CG или ступени): **{_extra_per_sheet:.2f}** за лист · "
+            f"всего по сборному тиражу **{_extra_total_combined:,.2f}**{_cost_unit}."
+        )
 
     # --- Сравнение: сборный vs раздельный ---
     st.markdown("#### Экономия сборного тиража vs раздельная печать")
@@ -4234,7 +4748,7 @@ def render_planner_tab(
 
     # ── Ручная корректировка ──
     st.divider()
-    st.subheader("Ручная корректировка")
+    _pl_editable_section_title("Ручная корректировка слотов на листе")
     _man_rows: list[dict[str, Any]] = []
     for i, (er, dem) in enumerate(ers_sorted):
         itn = rows_by_er.get(er) or {}
@@ -4254,7 +4768,13 @@ def render_planner_tab(
             "er": st.column_config.NumberColumn("er", disabled=True, format="%d"),
             "Название": st.column_config.TextColumn("Название", disabled=True),
             "Потребность": st.column_config.NumberColumn("Потребность", disabled=True, format="%d"),
-            "Слотов": st.column_config.NumberColumn("Слотов", min_value=0, step=1, format="%d"),
+            "Слотов": st.column_config.NumberColumn(
+                "Слотов",
+                min_value=0,
+                step=1,
+                format="%d",
+                help="Редактируемо · число ячеек листа под этот вид",
+            ),
         },
     )
 
@@ -4288,9 +4808,12 @@ def render_planner_tab(
                     "Разница %": round(over_p, 1),
                 })
             _price_r = pkg_db.sheet_price(_n_sh, _tariffs_for_plan)
-            _cost_r = _price_r * _n_sh
+            _cost_r = _price_r * _n_sh + _extra_per_sheet * float(_n_sh)
             st.dataframe(pd.DataFrame(_recalc_rows), use_container_width=True, hide_index=True)
-            st.caption(f"Листов: **{_n_sh:,}** · стоимость: **{_cost_r:,.2f}**")
+            st.caption(
+                f"Листов: **{_n_sh:,}** · база по ступеням: **{_price_r * _n_sh:,.2f}** · "
+                f"доплаты: **{_extra_per_sheet * float(_n_sh):,.2f}** · всего: **{_cost_r:,.2f}**"
+            )
 
     if st.button(
         "Применить раскладку и перейти на «Печать и заявки»",
@@ -4306,6 +4829,8 @@ def render_planner_tab(
             else:
                 st.session_state[wk] = "— пусто —"
         st.session_state["pp_size_group_select"] = _sel_sk
+        # Чтобы на «Печать и заявки» совпадало с рекомендацией планировщика (тот же ключ, что у number_input).
+        st.session_state[f"pp_n_sheets_{sk_safe_a}"] = int(n_sheets)
         st.session_state["pp_sheet_w"] = sheet_params.width_mm
         st.session_state["pp_sheet_h"] = sheet_params.height_mm
         st.session_state["pp_margin"] = sheet_params.margin_mm
@@ -4332,7 +4857,8 @@ def render_planner_tab(
             f"поле {sheet_params.margin_mm:g} мм; зазор X {sheet_params.gap_mm:g}, Y {sheet_params.gap_y_mm:g}",
             f"Ячеек на листе: {n_fit}",
             "",
-            f"Рекомендация: {n_sheets:,} листов · стоимость: {total_cost:,.2f}",
+            f"Рекомендация: {n_sheets:,} листов · стоимость (с доплатами): {total_cost:,.2f}",
+            f"Доплаты за отделку: {_extra_per_sheet:.2f} за лист · всего {_extra_total_combined:,.2f}",
             f"Если раздельно: {sep_sheets:,} листов · стоимость: {sep_cost:,.2f}",
             "",
         ]
@@ -4422,38 +4948,11 @@ def merge_kind_from_db(
     Если вид изменился относительно только что прочитанного Excel и задан excel_path —
     перезаписывает файл, чтобы на диске совпадало с подставленными значениями (одна операция save).
     """
-    if not db_path.is_file():
-        return
-    try:
-        conn = pkg_db.connect(db_path)
-        try:
-            pkg_db.init_db(conn)
-            if pkg_db.row_count(conn) == 0:
-                return
-            db_rows = pkg_db.load_all(conn)
-        finally:
-            conn.close()
-    except Exception:
-        return
-    by_er = {int(r["excel_row"]): r for r in db_rows}
-    any_kind_change = False
-    kind_fixed_rows: set[int] = set()
-    for item in rows:
-        br = by_er.get(int(item["excel_row"]))
-        if br is None:
-            continue
-        k = (br.get("kind") or "").strip()
-        if not k:
-            continue
-        prev = (item.get("kind") or "").strip()
-        if not overwrite_nonempty_excel:
-            if prev:
-                continue
-        elif k == prev:
-            continue
-        item["kind"] = k
-        any_kind_change = True
-        kind_fixed_rows.add(int(item["excel_row"]))
+    any_kind_change, kind_fixed_rows = merge_kind_values_from_sqlite(
+        rows,
+        db_path,
+        overwrite_nonempty_excel=overwrite_nonempty_excel,
+    )
     if kind_fixed_rows:
         clear_kind_widget_keys_for_excel_rows(rows, kind_fixed_rows)
     if any_kind_change and excel_path is not None and excel_path.is_file():
@@ -4554,7 +5053,7 @@ def render_makety_cg_supplier_prices_by_kind(
                     old_s = f"{float(old_v):.2f}" if old_v is not None else "—"
                     df_rows.append(
                         {
-                            "Отделка": _CG_FINISH_LABELS_MAKETY.get(ft, ft),
+                            "Отделка": CG_FINISH_LABELS_MAKETY.get(ft, ft),
                             "Тираж, шт.": _format_cg_qty_band(
                                 int(p["min_qty"]),
                                 int(p["max_qty"]) if p.get("max_qty") is not None else None,
@@ -4580,6 +5079,809 @@ def render_makety_cg_supplier_prices_by_kind(
             )
 
 
+
+def render_packaging_color_analytics(
+    rows: list[dict[str, Any]],
+    pdf_root: Path,
+    *,
+    bucket: str,
+) -> None:
+    """Анализ цветов PDF для одного вида: box | blister | pack | label."""
+    import packaging_color_analysis as pca
+    import pandas as pd
+
+    sk = (bucket or "").strip().lower()
+    _meta = {
+        "box": ("Коробка", "коробок", "Всего коробок"),
+        "blister": ("Блистер", "блистеров", "Всего блистеров"),
+        "pack": ("Пакет", "пакетов", "Всего пакетов"),
+        "label": ("Этикетка", "этикеток", "Всего этикеток"),
+    }
+    _kind_disp, _, _summary_total = _meta.get(
+        sk,
+        ("Позиция", "позиций", "Всего позиций"),
+    )
+    _light = "silver" if sk == "blister" else "keep"
+    _preview_cap = "серебро" if sk == "blister" else "как в PDF"
+
+    all_kind_rows = pca.collect_rows_for_color_bucket(rows, sk)
+    st.caption(
+        f"Тот же алгоритм, что для блистера: частоты цветов в PDF, базовая и доминирующая палитра, "
+        f"рекомендации и PDF-превью перекраски. "
+        f"Для **{_kind_disp.lower()}** "
+        + (
+            "в превью светлые области показаны **с серебристой основой** (как блистер)."
+            if sk == "blister"
+            else "фон превью **как в исходном PDF** (без имитации фольги)."
+        )
+    )
+    if not all_kind_rows:
+        st.info(f"В текущем наборе нет позиций вида «{_kind_disp}».")
+        return
+
+    _size_counts: dict[str, int] = {}
+    for _kr in all_kind_rows:
+        _sk_val = size_key_str(_kr)
+        _size_counts[_sk_val] = _size_counts.get(_sk_val, 0) + 1
+    _size_options = ["Все размеры"] + [
+        f"{format_size_key_label(k)} ({v} шт.)"
+        for k, v in sorted(_size_counts.items(), key=lambda x: -x[1])
+    ]
+    _size_keys_ordered = [None] + [
+        k for k, _ in sorted(_size_counts.items(), key=lambda x: -x[1])
+    ]
+
+    _sz_sel_key = f"bl_color_size_filter_{sk}"
+    _sz_choice = st.selectbox(
+        f"Размер ({_kind_disp.lower()})",
+        options=range(len(_size_options)),
+        format_func=lambda i: _size_options[i],
+        key=_sz_sel_key,
+        help="Выберите конкретный размер для анализа или «Все размеры».",
+    )
+    _chosen_size_key = _size_keys_ordered[int(_sz_choice)] if _sz_choice else None
+
+    if _chosen_size_key is not None:
+        kind_rows = [r for r in all_kind_rows if size_key_str(r) == _chosen_size_key]
+    else:
+        kind_rows = all_kind_rows
+
+    c1, c2, c3 = st.columns([1.2, 1.2, 1.2], gap="small")
+    with c1:
+        cluster_thr = st.slider(
+            "Порог объединения оттенков (RGB delta)",
+            min_value=10,
+            max_value=80,
+            value=int(st.session_state.get(f"bl_color_cluster_thr_{sk}", 28)),
+            step=1,
+            key=f"bl_color_cluster_thr_{sk}",
+        )
+    with c2:
+        top_dom = st.slider(
+            "Сколько доминирующих цветов",
+            min_value=3,
+            max_value=20,
+            value=int(st.session_state.get(f"bl_color_top_dom_{sk}", 8)),
+            step=1,
+            key=f"bl_color_top_dom_{sk}",
+        )
+    with c3:
+        _run = st.button(
+            f"Запустить анализ ({len(kind_rows)} шт.)",
+            type="primary",
+            key=f"bl_color_run_{sk}",
+            use_container_width=True,
+        )
+
+    if _run:
+        with st.spinner("Сканирование PDF и анализ цветов…"):
+            res = pca.build_color_stats(
+                kind_rows,
+                pdf_root=pdf_root,
+                cluster_threshold=float(cluster_thr),
+                top_n_dominant=int(top_dom),
+                summary_total_label=_summary_total,
+            )
+        st.session_state[f"bl_color_result_{sk}"] = res
+
+    result = st.session_state.get(f"bl_color_result_{sk}")
+    if not result:
+        st.info("Нажмите «Запустить анализ», чтобы построить сводку.")
+        return
+
+    summary_df = result["summary_df"]
+    pos_df = result["positions_df"]
+    global_df = result["global_colors_df"]
+    palette_ref_df = result.get("palette_reference_df")
+    dom_palette = result.get("dominant_palette") or []
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric(_kind_disp, int(len(kind_rows)))
+    m2.metric("С анализом PDF", int((pos_df["status"] == "ok").sum() if "status" in pos_df else 0))
+    m3.metric("Доминирующая палитра", int(len(dom_palette)))
+
+    if dom_palette:
+        st.caption("Доминирующие цвета выборки: " + ", ".join(dom_palette))
+
+    st.markdown("##### Сводка")
+    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+    st.markdown("##### Топ цветов (глобально)")
+    st.dataframe(global_df.head(30), use_container_width=True, hide_index=True)
+
+    # --- Визуальная таблица цветов с чекбоксами и превью фильтрации ---
+    if not global_df.empty and "hex" in global_df.columns:
+        st.markdown("##### Визуальный обзор цветов")
+        st.caption(
+            "Включите/отключите цвета чекбоксами. Превью ниже покажет, "
+            "как будет выглядеть макет только с выбранными цветами (остальные → белый)."
+        )
+        _n_colors_vis = min(20, len(global_df))
+        _vis_cols_per_row = 5
+        _active_colors: list[tuple[int, int, int]] = []
+
+        for _vr_start in range(0, _n_colors_vis, _vis_cols_per_row):
+            _vcols = st.columns(_vis_cols_per_row, gap="small")
+            for _vj in range(_vis_cols_per_row):
+                _vidx = _vr_start + _vj
+                if _vidx >= _n_colors_vis:
+                    break
+                _row_g = global_df.iloc[_vidx]
+                _hex_g = str(_row_g["hex"]).strip()
+                _rgb_g = pca.hex_to_rgb_u8(_hex_g)
+                _weight_g = int(_row_g.get("weight", 0))
+                _cmyk_g = str(_row_g.get("cmyk", ""))
+                _pms_g = str(_row_g.get("pantone_approx", ""))
+                _cb_key = f"bl_vis_cb_{sk}_{_vidx}"
+                if _cb_key not in st.session_state:
+                    st.session_state[_cb_key] = True
+                with _vcols[_vj]:
+                    _text_col = "#fff" if sum(_rgb_g) < 380 else "#000"
+                    st.markdown(
+                        f'<div style="background:{_hex_g};color:{_text_col};'
+                        f'padding:10px 6px;border-radius:6px;text-align:center;'
+                        f'margin-bottom:4px;font-size:0.78rem;line-height:1.3;">'
+                        f'<b>{_hex_g}</b><br>{_cmyk_g}<br>≈ {_pms_g}<br>вес {_weight_g}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    _is_on = st.checkbox(
+                        "Вкл",
+                        value=st.session_state[_cb_key],
+                        key=_cb_key,
+                        label_visibility="collapsed",
+                    )
+                    if _is_on:
+                        _active_colors.append(_rgb_g)
+
+        _n_active = len(_active_colors)
+        st.caption(f"Выбрано **{_n_active}** из {_n_colors_vis} цветов.")
+
+        st.markdown("###### Превью: только выбранные цвета")
+        _fp_vis, _item_vis = pca.find_first_pdf_path_in_rows(kind_rows, pdf_root)
+        if _fp_vis is not None and _item_vis is not None:
+            if _n_active == 0:
+                st.warning("Не выбрано ни одного цвета — включите хотя бы один чекбокс выше.")
+            else:
+                _vis_png = pca.render_pdf_with_selected_colors(
+                    _fp_vis,
+                    _active_colors,
+                    dpi=96.0,
+                    cluster_threshold=float(cluster_thr),
+                    light_base=_light,
+                )
+                if _vis_png:
+                    _vis_c1, _vis_c2 = st.columns(2, gap="small")
+                    with _vis_c1:
+                        st.markdown("**Исходник**")
+                        _orig_pair = pca.blister_recolor_comparison_pngs(
+                            _fp_vis,
+                            dpi=96.0,
+                            cluster_threshold=float(cluster_thr),
+                            pixel_match_radius=30.0,
+                            mode="core",
+                            dominant_palette=[],
+                            palette_items=list(pca.CORE_PALETTE.items()),
+                            light_base=_light,
+                        )
+                        if _orig_pair:
+                            st.image(io.BytesIO(_orig_pair[0]), use_container_width=True)
+                    with _vis_c2:
+                        st.markdown("**Только выбранные цвета**")
+                        st.image(io.BytesIO(_vis_png), use_container_width=True)
+                    st.caption(
+                        f"Строка Excel {_item_vis.get('excel_row', '—')}. "
+                        f"Пиксели, не принадлежащие выбранным {_n_active} кластерам, заменены белым."
+                    )
+                else:
+                    st.info("Не удалось отрендерить превью для первого PDF.")
+        else:
+            st.info("Ни у одной позиции не найден файл PDF — превью недоступно.")
+
+        st.divider()
+
+    if palette_ref_df is not None and not palette_ref_df.empty:
+        st.markdown("##### Палитра: CMYK и Pantone (приближение)")
+        st.caption(
+            "CMYK рассчитан из sRGB (без ICC-профиля), Pantone указан как ближайшее приближение. "
+            "Используйте как ориентир и сверяйте с официальным каталогом перед печатью."
+        )
+        st.dataframe(palette_ref_df, use_container_width=True, hide_index=True, height=220)
+
+    st.markdown(f"##### Рекомендации по позициям ({_kind_disp})")
+    show_cols = [
+        "excel_row",
+        "name",
+        "pdf",
+        "status",
+        "top_colors",
+        "core_reco",
+        "risk_core",
+        "dominant_reco",
+        "risk_dominant",
+    ]
+    show_cols = [c for c in show_cols if c in pos_df.columns]
+    st.dataframe(pos_df[show_cols], use_container_width=True, hide_index=True, height=420)
+
+    csv_sum = pca.export_color_report_csv(summary_df)
+    csv_pos = pca.export_color_report_csv(pos_df)
+    xlsx_sheets = {
+        "summary": summary_df,
+        "global_colors": global_df,
+        "positions": pos_df,
+    }
+    if palette_ref_df is not None:
+        xlsx_sheets["palette_ref"] = palette_ref_df
+    xlsx_all = pca.export_color_report_xlsx(xlsx_sheets)
+    e1, e2, e3 = st.columns(3, gap="small")
+    with e1:
+        st.download_button(
+            "Скачать summary.csv",
+            data=csv_sum,
+            file_name=f"{sk}_color_summary.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key=f"bl_color_dl_summary_csv_{sk}",
+        )
+    with e2:
+        st.download_button(
+            "Скачать positions.csv",
+            data=csv_pos,
+            file_name=f"{sk}_color_positions.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key=f"bl_color_dl_positions_csv_{sk}",
+        )
+    with e3:
+        st.download_button(
+            "Скачать report.xlsx",
+            data=xlsx_all,
+            file_name=f"{sk}_color_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=f"bl_color_dl_xlsx_{sk}",
+        )
+
+    st.markdown("##### PDF-превью перекраски")
+    if sk == "blister":
+        st.caption(
+            f"Основа в превью и в PDF: **серебристая фольга** "
+            f"(светлые/белые области → RGB {pca.BLISTER_PREVIEW_SILVER_RGB}). "
+            "На каждом листе слева — исходник, справа — перекраска."
+        )
+    else:
+        st.caption(
+            "Светлые области **без замены на фольгу** (как в экспорте PDF). "
+            "На каждом листе слева — исходник, справа — перекраска."
+        )
+
+    _n_pdf = len(kind_rows)
+    _kf = f"bl_color_preview_from_{sk}"
+    _kt = f"bl_color_preview_to_{sk}"
+    for _k_cl, _lo_cl, _hi_cl in ((_kf, 1, _n_pdf), (_kt, 1, _n_pdf)):
+        if _k_cl in st.session_state:
+            try:
+                _v_cl = int(st.session_state[_k_cl])
+            except (TypeError, ValueError):
+                _v_cl = _lo_cl
+            st.session_state[_k_cl] = max(_lo_cl, min(_v_cl, _hi_cl))
+    if _kf in st.session_state and _kt in st.session_state and int(st.session_state[_kt]) < int(
+        st.session_state[_kf]
+    ):
+        st.session_state[_kt] = st.session_state[_kf]
+
+    r1, r2 = st.columns([1.4, 1], gap="small")
+    with r1:
+        preview_mode = st.radio(
+            "Режим перекраски",
+            options=["core", "dominant"],
+            format_func=lambda x: "Базовая палитра" if x == "core" else "Доминирующая палитра",
+            horizontal=True,
+            key=f"bl_color_preview_mode_{sk}",
+        )
+    with r2:
+        st.caption("Диапазон в списке (включительно)")
+        _rc_a, _rc_b = st.columns(2, gap="small")
+        with _rc_a:
+            st.number_input(
+                "С №",
+                min_value=1,
+                max_value=max(1, _n_pdf),
+                value=1,
+                step=1,
+                help="Первая позиция в списке для страниц PDF.",
+                key=_kf,
+            )
+        with _rc_b:
+            st.number_input(
+                "По №",
+                min_value=1,
+                max_value=max(1, _n_pdf),
+                value=max(1, _n_pdf),
+                step=1,
+                help="Последняя позиция включительно.",
+                key=_kt,
+            )
+    st.caption(
+        f"В списке **{_n_pdf}** позиций — интервал **1–25** или **1–{_n_pdf}** для всех. "
+        "Большой PDF может быть тяжёлым для браузера."
+    )
+
+    _n_dom_preview = int(top_dom)
+    for _i, (_nm, _rgb) in enumerate(pca.CORE_PALETTE.items()):
+        _k = f"bl_cp_core_{sk}_{_i}"
+        if _k not in st.session_state:
+            st.session_state[_k] = pca._rgb_to_hex(_rgb)
+    for _i in range(_n_dom_preview):
+        _k = f"bl_cp_dom_{sk}_{_i}"
+        if _k not in st.session_state:
+            _h = "#888888"
+            if _i < len(global_df) and "hex" in global_df.columns:
+                _hx = str(global_df.iloc[_i]["hex"]).strip()
+                _h = _hx if _hx.startswith("#") else f"#{_hx}" if len(_hx) == 6 else _h
+            st.session_state[_k] = _h
+
+    st.markdown("###### Цвета для превью (можно изменить перед генерацией)")
+    st.caption(
+        "Ниже те оттенки, к которым будут подгоняться кластеры PDF при сборке превью. "
+        "Таблица обновляется по текущим значениям пикеров."
+    )
+    if preview_mode == "core":
+        _core_list = list(pca.CORE_PALETTE.items())
+        _nc = len(_core_list)
+        for _row_start in range(0, _nc, 3):
+            _cols = st.columns(3, gap="small")
+            for _j in range(3):
+                _idx = _row_start + _j
+                if _idx >= _nc:
+                    break
+                _nm, _rgb = _core_list[_idx]
+                with _cols[_j]:
+                    st.color_picker(
+                        _nm,
+                        key=f"bl_cp_core_{sk}_{_idx}",
+                        help=f"По умолчанию: {pca._rgb_to_hex(_rgb)}",
+                    )
+    else:
+        for _row_start in range(0, _n_dom_preview, 4):
+            _cols = st.columns(4, gap="small")
+            for _j in range(4):
+                _idx = _row_start + _j
+                if _idx >= _n_dom_preview:
+                    break
+                with _cols[_j]:
+                    st.color_picker(
+                        f"Dominant {_idx + 1}",
+                        key=f"bl_cp_dom_{sk}_{_idx}",
+                        help=f"Слот {_idx + 1} (глобальный топ {_idx + 1})",
+                    )
+
+    _b1, _b2 = st.columns([1, 2], gap="small")
+    with _b1:
+        if st.button(
+            "Сбросить цвета к анализу",
+            key=f"bl_cp_reset_preview_{sk}",
+            help="Базовая палитра — как CORE_PALETTE; доминирующая — как топ цветов из таблицы выше.",
+        ):
+            for _i, (_, _rgb) in enumerate(pca.CORE_PALETTE.items()):
+                st.session_state[f"bl_cp_core_{sk}_{_i}"] = pca._rgb_to_hex(_rgb)
+            for _i in range(_n_dom_preview):
+                _h = "#888888"
+                if _i < len(global_df) and "hex" in global_df.columns:
+                    _hx = str(global_df.iloc[_i]["hex"]).strip()
+                    _h = _hx if _hx.startswith("#") else f"#{_hx}" if len(_hx) == 6 else _h
+                st.session_state[f"bl_cp_dom_{sk}_{_i}"] = _h
+            st.rerun()
+
+    _preview_rows: list[dict[str, Any]] = []
+    if preview_mode == "core":
+        for _i, _nm in enumerate(pca.CORE_PALETTE.keys()):
+            _hx = str(st.session_state.get(f"bl_cp_core_{sk}_{_i}", "#808080"))
+            _rgb = pca.hex_to_rgb_u8(_hx)
+            _pms, _ = pca.nearest_pantone_approx(_rgb)
+            _preview_rows.append(
+                {
+                    "Слот": _nm,
+                    "Hex": _hx.upper(),
+                    "RGB": f"{_rgb[0]}, {_rgb[1]}, {_rgb[2]}",
+                    "CMYK": pca.cmyk_percent_str(_rgb),
+                    "Pantone ≈": _pms,
+                }
+            )
+    else:
+        for _i in range(_n_dom_preview):
+            _hx = str(st.session_state.get(f"bl_cp_dom_{sk}_{_i}", "#808080"))
+            _rgb = pca.hex_to_rgb_u8(_hx)
+            _pms, _ = pca.nearest_pantone_approx(_rgb)
+            _preview_rows.append(
+                {
+                    "Слот": f"Dominant {_i + 1}",
+                    "Hex": _hx.upper(),
+                    "RGB": f"{_rgb[0]}, {_rgb[1]}, {_rgb[2]}",
+                    "CMYK": pca.cmyk_percent_str(_rgb),
+                    "Pantone ≈": _pms,
+                }
+            )
+
+    st.dataframe(
+        pd.DataFrame(_preview_rows),
+        use_container_width=True,
+        hide_index=True,
+        height=min(320, 56 + 36 * len(_preview_rows)),
+    )
+
+    p3, p4 = st.columns(2, gap="small")
+    with p3:
+        preview_dpi = st.slider(
+            "DPI превью",
+            min_value=72,
+            max_value=200,
+            value=96,
+            step=8,
+            key=f"bl_color_preview_dpi_{sk}",
+        )
+    with p4:
+        preview_radius = st.slider(
+            "Радиус сопоставления",
+            min_value=10,
+            max_value=90,
+            value=30,
+            step=1,
+            key=f"bl_color_preview_radius_{sk}",
+        )
+
+    if preview_mode == "core":
+        _palette_for_pdf = [
+            (_nm, pca.hex_to_rgb_u8(str(st.session_state[f"bl_cp_core_{sk}_{_i}"])))
+            for _i, _nm in enumerate(pca.CORE_PALETTE.keys())
+        ]
+    else:
+        _palette_for_pdf = [
+            (f"Dominant {_i + 1}", pca.hex_to_rgb_u8(str(st.session_state[f"bl_cp_dom_{sk}_{_i}"])))
+            for _i in range(_n_dom_preview)
+        ]
+
+    st.markdown(f"###### Превью на экране (первая позиция {_kind_disp} с PDF)")
+    _fp0, _item0 = pca.find_first_pdf_path_in_rows(kind_rows, pdf_root)
+    if _fp0 is not None and _item0 is not None:
+        _pair_ui = pca.blister_recolor_comparison_pngs(
+            _fp0,
+            dpi=float(preview_dpi),
+            cluster_threshold=float(cluster_thr),
+            pixel_match_radius=float(preview_radius),
+            mode=preview_mode,
+            dominant_palette=[],
+            palette_items=_palette_for_pdf,
+            light_base=_light,
+        )
+        if _pair_ui:
+            _cap_base = "серебро, как в PDF-блистере" if sk == "blister" else "как в исходном PDF"
+            st.caption(
+                f"Строка Excel {_item0.get('excel_row', '—')}: слева — исходный макет, справа — перекраска. "
+                f"Светлая основа — {_cap_base}."
+            )
+            _pvc1, _pvc2 = st.columns(2, gap="small")
+            with _pvc1:
+                st.markdown("**Исходник**")
+                st.image(io.BytesIO(_pair_ui[0]), use_container_width=True)
+            with _pvc2:
+                st.markdown("**После перекраски**")
+                st.image(io.BytesIO(_pair_ui[1]), use_container_width=True)
+        else:
+            st.info("Для первого PDF не удалось снять цвета/кластеры — превью недоступно.")
+    else:
+        st.info("Ни у одной позиции не найден файл PDF по пути из таблицы.")
+
+    run_preview = st.button(
+        "Собрать PDF превью перекраски",
+        key=f"bl_color_preview_run_{sk}",
+        use_container_width=True,
+    )
+    if run_preview:
+        _p_from = max(1, min(int(st.session_state.get(_kf, 1)), _n_pdf))
+        _p_to = max(1, min(int(st.session_state.get(_kt, _n_pdf)), _n_pdf))
+        if _p_to < _p_from:
+            _p_to = _p_from
+        with st.spinner("Генерация PDF-превью перекраски..."):
+            preview_res = pca.build_recolor_preview_pdf_bytes(
+                kind_rows,
+                pdf_root=pdf_root,
+                mode=preview_mode,
+                cluster_threshold=float(cluster_thr),
+                top_n_dominant=int(top_dom),
+                item_from_1=_p_from,
+                item_to_1=_p_to,
+                dpi=int(preview_dpi),
+                pixel_match_radius=float(preview_radius),
+                palette_items=_palette_for_pdf,
+                light_base=_light,
+                preview_base_caption=_preview_cap,
+            )
+        preview_res["_range_from"] = _p_from
+        preview_res["_range_to"] = _p_to
+        st.session_state[f"bl_color_preview_result_{sk}"] = preview_res
+
+    preview_result = st.session_state.get(f"bl_color_preview_result_{sk}")
+    if preview_result:
+        if preview_result.get("ok"):
+            _rf = int(preview_result.get("_range_from") or 1)
+            _rt = int(preview_result.get("_range_to") or _n_pdf)
+            st.success(
+                f"Готово: диапазон **{_rf}–{_rt}**, страниц {int(preview_result.get('generated') or 0)}, "
+                f"пропущено {int(preview_result.get('skipped') or 0)}."
+            )
+            st.download_button(
+                "Скачать PDF превью",
+                data=preview_result.get("pdf_bytes") or b"",
+                file_name=f"{sk}_recolor_preview_{preview_mode}_{_rf}-{_rt}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                key=f"bl_color_preview_download_{sk}",
+            )
+        else:
+            st.warning(preview_result.get("error") or "Не удалось собрать PDF-превью.")
+
+
+def render_product_card_export(rows: list[dict[str, Any]], pdf_root: Path, db_path: Path | None = None) -> None:
+    """UI: выбор коробки, подбор связанных элементов, остатки/прогноз, генерация PDF-карточки."""
+    from modules.packaging_catalog.application.product_group import (
+        find_related_items,
+        format_row_label,
+    )
+    from modules.packaging_catalog.application.product_card_pdf import build_product_card_pdf
+    from modules.packaging_catalog.application.product_card_data import collect_product_card_data
+
+    with st.expander("Карточка препарата (PDF)", expanded=False):
+        st.caption(
+            "Выберите коробку — система предложит связанные блистеры, этикетки и пакеты "
+            "по GMP-коду и названию. Укажите остатки и скачайте PDF-карточку с прогнозом."
+        )
+
+        box_rows = [r for r in rows if kind_bucket(r) == "box"]
+        if not box_rows:
+            st.info("В каталоге нет позиций вида «Коробка».")
+            return
+
+        _search_col, _clear_col = st.columns([4, 1], gap="small")
+        with _search_col:
+            _pc_search = st.text_input(
+                "Поиск коробки",
+                value=st.session_state.get("_pc_search_text", ""),
+                placeholder="Название, GMP, размер…",
+                key="_pc_search_text",
+            )
+        with _clear_col:
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            if st.button("✕", key="pc_clear_search", help="Очистить поиск"):
+                st.session_state["_pc_search_text"] = ""
+                st.session_state.pop("pc_box_select", None)
+                st.session_state.pop("_pc_pdf_bytes", None)
+                for _ck in ("pc_rel_blister", "pc_rel_label", "pc_rel_pack"):
+                    st.session_state.pop(_ck, None)
+                st.rerun()
+
+        _q = (_pc_search or "").strip().lower()
+        if _q:
+            _filtered_boxes = [
+                r for r in box_rows
+                if _q in format_row_label(r).lower()
+            ]
+        else:
+            _filtered_boxes = box_rows
+
+        if not _filtered_boxes:
+            st.info(f"По запросу «{_pc_search}» коробок не найдено.")
+            return
+
+        box_options = [format_row_label(r) for r in _filtered_boxes]
+        box_idx = st.selectbox(
+            f"Коробка ({len(_filtered_boxes)} из {len(box_rows)})",
+            options=range(len(box_options)),
+            format_func=lambda i: box_options[i],
+            key="pc_box_select",
+        )
+        box_row = _filtered_boxes[int(box_idx)] if box_idx is not None else _filtered_boxes[0]
+
+        _gmp = (box_row.get("gmp_code") or "").strip()
+        if not _gmp:
+            _gmp = pkg_db.extract_gmp_code(box_row.get("name") or "", box_row.get("file") or "")
+
+        related = find_related_items(box_row, rows)
+
+        selected: dict[str, dict[str, Any] | None] = {}
+        _kind_labels = {"blister": "Блистер", "label": "Этикетка", "pack": "Пакет"}
+        cols = st.columns(3, gap="small")
+        for i, (kind_key, kind_label) in enumerate(_kind_labels.items()):
+            candidates = related.get(kind_key, [])
+            with cols[i]:
+                if not candidates:
+                    st.caption(f"{kind_label}: не найдено")
+                    selected[kind_key] = None
+                else:
+                    opts = ["— нет —"] + [format_row_label(c) for c in candidates]
+                    choice = st.selectbox(
+                        kind_label,
+                        options=range(len(opts)),
+                        format_func=lambda j, _o=opts: _o[j],
+                        key=f"pc_rel_{kind_key}",
+                    )
+                    if choice and int(choice) > 0:
+                        selected[kind_key] = candidates[int(choice) - 1]
+                    else:
+                        selected[kind_key] = None
+
+        n_selected = sum(1 for v in selected.values() if v is not None)
+        st.caption(f"Коробка + {n_selected} связанных элементов.")
+
+        # ── Остатки упаковки ──
+        st.markdown("##### Остатки упаковки на складах")
+        _stock_kinds = {"box": "Коробка", "blister": "Блистер", "label": "Этикетка", "pack": "Пакет"}
+
+        _existing_pkg_stock: dict[str, float] = {}
+        if db_path and db_path.is_file() and _gmp:
+            try:
+                _pc_conn = pkg_db.connect(db_path)
+                pkg_db.init_db(_pc_conn)
+                _existing_pkg_stock = pkg_db.load_packaging_stock_for_gmp(_pc_conn, _gmp)
+                _pc_conn.close()
+            except Exception:
+                pass
+
+        _stock_cols = st.columns(4, gap="small")
+        _stock_vals: dict[str, float] = {}
+        for idx, (sk, sl) in enumerate(_stock_kinds.items()):
+            with _stock_cols[idx]:
+                _stock_vals[sk] = st.number_input(
+                    f"{sl} (шт.)",
+                    min_value=0.0,
+                    value=float(_existing_pkg_stock.get(sk, 0.0)),
+                    step=100.0,
+                    key=f"pc_stock_{sk}",
+                )
+
+        # ── Остатки субстанции ──
+        st.markdown("##### Остатки субстанции (препарата)")
+
+        _existing_sub: dict[str, Any] = {}
+        if db_path and db_path.is_file() and _gmp:
+            try:
+                _pc_conn2 = pkg_db.connect(db_path)
+                pkg_db.init_db(_pc_conn2)
+                _sub_all = pkg_db.load_substance_stock(_pc_conn2, _gmp)
+                _existing_sub = _sub_all.get(_gmp.strip().upper(), {})
+                _pc_conn2.close()
+            except Exception:
+                pass
+
+        _sub_c1, _sub_c2 = st.columns([2, 1], gap="small")
+        with _sub_c1:
+            _sub_qty = st.number_input(
+                "Количество",
+                min_value=0.0,
+                value=float(_existing_sub.get("qty", 0.0)),
+                step=1.0,
+                key="pc_sub_qty",
+            )
+        with _sub_c2:
+            _sub_unit_options = list(pkg_db.SUBSTANCE_UNITS)
+            _cur_unit = _existing_sub.get("unit", "кг")
+            _sub_unit_idx = _sub_unit_options.index(_cur_unit) if _cur_unit in _sub_unit_options else 0
+            _sub_unit = st.selectbox(
+                "Единица",
+                options=_sub_unit_options,
+                index=_sub_unit_idx,
+                key="pc_sub_unit",
+            )
+
+        # ── Кнопка сохранения остатков ──
+        if st.button("Сохранить остатки", key="pc_save_stock", help="Записать остатки в БД"):
+            if db_path and _gmp:
+                try:
+                    _sc = pkg_db.connect(db_path)
+                    pkg_db.init_db(_sc)
+                    for _sk, _sv in _stock_vals.items():
+                        pkg_db.upsert_packaging_stock(_sc, _gmp, _sk, _sv, source="manual")
+                    pkg_db.upsert_substance_stock(_sc, _gmp, _sub_qty, _sub_unit, source="manual")
+                    _sc.close()
+                    st.success("Остатки сохранены.")
+                except Exception as _e:
+                    st.error(f"Ошибка сохранения: {_e}")
+            else:
+                st.warning("Не удалось сохранить: нет GMP-кода или пути к БД.")
+
+        st.divider()
+
+        # ── Генерация PDF ──
+        if st.button("Сгенерировать PDF-карточку", key="pc_gen_btn", type="primary"):
+            with st.spinner("Сборка PDF…"):
+                _db_str = str(db_path) if db_path and db_path.is_file() else None
+                card_data = collect_product_card_data(
+                    _db_str, _gmp, box_row, selected, rows,
+                )
+                for _sk2, _sv2 in _stock_vals.items():
+                    for ps in card_data.packaging_stock:
+                        if ps.kind == _sk2:
+                            ps.qty = _sv2
+                card_data.substance.qty = _sub_qty
+                card_data.substance.unit = _sub_unit
+
+                pdf_bytes = build_product_card_pdf(
+                    box_row,
+                    selected,
+                    pdf_root,
+                    card_data=card_data,
+                )
+            st.session_state["_pc_pdf_bytes"] = pdf_bytes
+            _fn_parts: list[str] = []
+            _fn_name = re.sub(r"[^\w\s\-]", "", (box_row.get("name") or "").strip())[:60].strip()
+            if _fn_name:
+                _fn_parts.append(_fn_name.replace(" ", "_"))
+            _fn_box_sz = (box_row.get("size") or "").strip().replace(" ", "")
+            if _fn_box_sz:
+                _fn_parts.append(f"box_{_fn_box_sz}")
+            _fn_lbl_row = selected.get("label")
+            if _fn_lbl_row:
+                _fn_lbl_sz = (_fn_lbl_row.get("size") or "").strip().replace(" ", "")
+                if _fn_lbl_sz:
+                    _fn_parts.append(f"label_{_fn_lbl_sz}")
+            st.session_state["_pc_pdf_filename"] = (
+                ("_".join(_fn_parts) if _fn_parts else "product_card") + ".pdf"
+            )
+
+        if st.session_state.get("_pc_pdf_bytes"):
+            st.download_button(
+                "Скачать PDF-карточку",
+                data=st.session_state["_pc_pdf_bytes"],
+                file_name=st.session_state.get("_pc_pdf_filename", "product_card.pdf"),
+                mime="application/pdf",
+                use_container_width=True,
+                key="pc_download_btn",
+            )
+
+
+def render_packaging_color_analytics_tabs(rows: list[dict[str, Any]], pdf_root: Path) -> None:
+    """Четыре вкладки: анализ цветов PDF для коробки, блистера, пакета, этикетки."""
+    with st.expander("Анализ цветов PDF (коробка, блистер, пакет, этикетка)", expanded=False):
+        st.caption(
+            "Одинаковая логика для всех видов: частоты цветов, рекомендации по палитре, выгрузка CSV/XLSX "
+            "и PDF-превью перекраски. Для блистера в превью светлые области имитируют серебряную основу; "
+            "для коробки, пакета и этикетки фон как в файле PDF."
+        )
+        tab_box, tab_bl, tab_pk, tab_lb = st.tabs(["Коробка", "Блистер", "Пакет", "Этикетка"])
+        with tab_box:
+            render_packaging_color_analytics(rows, pdf_root, bucket="box")
+        with tab_bl:
+            render_packaging_color_analytics(rows, pdf_root, bucket="blister")
+        with tab_pk:
+            render_packaging_color_analytics(rows, pdf_root, bucket="pack")
+        with tab_lb:
+            render_packaging_color_analytics(rows, pdf_root, bucket="label")
+
+
+def render_blister_color_analytics(rows: list[dict[str, Any]], pdf_root: Path) -> None:
+    """Совместимость: открывает общий блок с вкладками (блистер — одна из вкладок)."""
+    render_packaging_color_analytics_tabs(rows, pdf_root)
+
+
 def apply_excel_file_reload_to_session() -> None:
     """Сбрасывает кэш строк; при следующем проходе данные снова читаются из файла Excel."""
     st.session_state.pop("packaging_rows", None)
@@ -4602,7 +5904,7 @@ def main() -> None:
         div[data-testid="stCheckbox"] { min-height: 2rem !important; }
         div[data-testid="stCheckbox"] label { font-size: 0.75rem !important; }
         .pkg-row-hr { border: none; border-top: 1px solid rgba(128,128,128,0.25); margin: 0.1rem 0 0.2rem 0; }
-        .pkg-fn { font-size: 0.72rem; line-height: 1.15; margin: 0; padding: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+        .pkg-fn { font-size: 0.72rem; line-height: 1.25; margin: 0; padding: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; word-break: break-word; hyphens: auto; }
         div[data-testid="stImage"] img { object-fit: contain; border-radius: 2px; box-shadow: 0 0 0 1px rgba(0,0,0,0.06); }
         .pkg-nav-spacer { height: 0.65rem; }
         </style>
@@ -4621,6 +5923,12 @@ def main() -> None:
             value=False,
             key="pkg_merge_kind_overwrite_excel",
             help="Выключено (рекомендуется): при открытии/перезагрузке Excel пустые «Вид» подтягиваются из БД; непустые в файле не меняются. Включите, если колонка «Вид» в файле устарела, а истина только в SQLite.",
+        )
+        st.checkbox(
+            "Требовать эталонные заголовки Excel (все 13 имён листа «Макеты»)",
+            value=True,
+            key="pkg_excel_strict_ref",
+            help="Включено: без полного набора заголовков в строке 1 загрузка не выполняется. Выключите для старых файлов или используйте «Привести Excel к эталону».",
         )
         st.subheader("Миниатюры")
         scale = st.slider(
@@ -4676,14 +5984,70 @@ def main() -> None:
     db_path = Path(db_path_str).expanduser().resolve()
     max_modal_bytes = int(max_modal_mb * 1024 * 1024)
 
-    if st.sidebar.button(
-        "Загрузить обновлённый Excel",
-        help="Перечитать Excel с диска. Пустые «Вид» подставляются из SQLite; непустые в файле сохраняются, если в сайдбаре не включена перезапись из БД.",
-        use_container_width=True,
-        key="reload_excel_sidebar",
-    ):
-        apply_excel_file_reload_to_session()
-        st.rerun()
+    if not excel_path.is_file():
+        st.error(f"Файл Excel не найден: {excel_path}")
+        st.stop()
+
+    with st.sidebar:
+        st.divider()
+        st.subheader("Эталон «Макеты»")
+        _ref_excel, _ref_db = load_makety_paths_ref()
+        _ref_bits: list[str] = []
+        if _ref_excel is not None:
+            _ref_bits.append(
+                f"Excel: `{_ref_excel.name}`"
+                + ("" if _ref_excel.is_file() else " (нет файла)")
+            )
+        if _ref_db is not None:
+            _ref_bits.append(
+                f"БД: `{_ref_db.name}`"
+                + ("" if _ref_db.is_file() else " (нет файла)")
+            )
+        if _ref_bits:
+            st.caption("Из **makety_paths_ref.json**: " + " · ".join(_ref_bits))
+        else:
+            st.caption(
+                f"Необязательно: создайте **{MAKETY_PATHS_REF_PATH.name}** с ключами "
+                "`excel_path` и `db_path` (относительно папки приложения)."
+            )
+        if st.button(
+            "Привести Excel к эталону",
+            key="pkg_normalize_excel_ref",
+            help="Перечитать файл (включая старый формат), записать строку заголовков и 13 столбцов как в шаблоне, очистить хвост строк.",
+        ):
+            try:
+                normalize_excel_file_to_makety_reference(
+                    excel_path,
+                    db_path if db_path.is_file() else None,
+                    overwrite_nonempty_excel=bool(
+                        st.session_state.get("pkg_merge_kind_overwrite_excel", False)
+                    ),
+                )
+                apply_excel_file_reload_to_session()
+                st.success(f"Файл приведён к эталону: {excel_path.name}")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Не удалось нормализовать Excel: {e}")
+
+    if "packaging_rows" not in st.session_state:
+        try:
+            _strict_excel = bool(st.session_state.get("pkg_excel_strict_ref", True))
+            loaded = load_rows_from_excel(
+                excel_path,
+                strict_reference_layout=_strict_excel,
+            )
+            merge_kind_from_db(
+                loaded,
+                db_path,
+                excel_path,
+                overwrite_nonempty_excel=bool(
+                    st.session_state.get("pkg_merge_kind_overwrite_excel", False)
+                ),
+            )
+            st.session_state.packaging_rows = loaded
+        except Exception as e:
+            st.error(f"Не удалось прочитать Excel: {e}")
+            st.stop()
 
     if st.sidebar.button("Загрузить из SQLite"):
         if not db_path.is_file():
@@ -4704,41 +6068,167 @@ def main() -> None:
             finally:
                 conn.close()
 
-    if not excel_path.is_file():
-        st.error(f"Файл Excel не найден: {excel_path}")
-        st.stop()
+    if st.sidebar.button(
+        "GMP из имён PDF → БД",
+        help="По полю «Исходный PDF» извлекает код вида (ВУМ-169-01) или ВУМ-169-01 в имени файла и записывает в SQLite (gmp_code). "
+        "Затем подставляет GMP в текущую сессию макетов.",
+        key="pkg_sync_gmp_pdf_sidebar",
+    ):
+        if not db_path.is_file():
+            st.sidebar.error("Файл БД не найден")
+        elif "packaging_rows" not in st.session_state:
+            st.sidebar.warning("Сначала загрузите Excel")
+        else:
+            conn_g = pkg_db.connect(db_path)
+            try:
+                pkg_db.init_db(conn_g)
+                u_g, same_g, skip_g = pkg_db.sync_gmp_from_pdf_filenames(conn_g)
+                fresh_g = pkg_db.load_all(conn_g)
+            finally:
+                conn_g.close()
+            by_gmp = {int(r["excel_row"]): (r.get("gmp_code") or "").strip() for r in fresh_g}
+            new_pack = []
+            for row in st.session_state.packaging_rows:
+                nr = dict(row)
+                er = int(nr["excel_row"])
+                if er in by_gmp:
+                    nr["gmp_code"] = by_gmp[er]
+                new_pack.append(nr)
+            st.session_state.packaging_rows = new_pack
+            st.session_state.pop("_db_row_mirror", None)
+            st.sidebar.success(
+                f"GMP: обновлено в БД **{u_g}**, без изменений **{same_g}**, нет кода в имени PDF **{skip_g}**."
+            )
+            st.rerun()
+
+    st.sidebar.text_input(
+        "Cutii → БД (помесячно)",
+        value=str(ROOT.parent / "Balcan 2025 cutii.xlsx"),
+        key="pkg_cutii_xlsx_quick",
+        help="Файл с датами месяцев в шапке (например «Balcan 2025 cutii.xlsx»). Данные пишутся в SQLite; «Профиль Excel» и планировщик читают их из БД.",
+    )
+    if st.sidebar.button(
+        "Импорт cutii в БД",
+        key="pkg_cutii_import_sidebar",
+        help="Сопоставление строк buc. с коробками (как вкладка Cutii): qty за год и помесячно в packaging_monthly_qty.",
+    ):
+        import import_cutii_forecast as ic
+
+        if not db_path.is_file():
+            st.sidebar.error("Файл БД не найден")
+        elif "packaging_rows" not in st.session_state:
+            st.sidebar.warning("Нет строк макетов в сессии")
+        else:
+            cp = Path(str(st.session_state.get("pkg_cutii_xlsx_quick", "")).strip()).expanduser().resolve()
+            if not cp.is_file():
+                st.sidebar.error(f"Файл cutii не найден: {cp}")
+            else:
+                try:
+                    with st.spinner("Импорт cutii…"):
+                        n_w, res_c = ic.import_cutii_matched_volumes_to_db(
+                            cp,
+                            st.session_state.packaging_rows,
+                            db_path,
+                            excel_path,
+                        )
+                except Exception as e:
+                    st.sidebar.error(str(e))
+                else:
+                    clear_packaging_row_widget_keys()
+                    st.session_state.pop("packaging_rows", None)
+                    st.session_state.pop("_db_row_mirror", None)
+                    n_pend = len(res_c.get("pending") or [])
+                    st.sidebar.success(
+                        f"Записано **{n_w}** поз. Помесячные данные в БД — профиль Excel их подхватит. "
+                        f"Не импортировано (нужен разбор): **{n_pend}** строк cutii — вкладка «Cutii»."
+                    )
+                    st.rerun()
 
     excel_download_bytes: bytes | None = None
+    _excel_download_err: str | None = None
     try:
         excel_download_bytes = excel_path.read_bytes()
     except OSError as e:
-        st.sidebar.caption(f"Не удалось прочитать файл для скачивания: {e}")
-    if excel_download_bytes is not None:
-        st.sidebar.download_button(
-            label="Скачать Excel",
-            data=excel_download_bytes,
-            file_name=excel_path.name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            key="pkg_download_xlsx",
-            help="Текущий файл с диска по пути «Файл Excel»",
-        )
+        _excel_download_err = str(e)
 
-    if "packaging_rows" not in st.session_state:
-        try:
-            loaded = load_rows_from_excel(excel_path)
-            merge_kind_from_db(
-                loaded,
-                db_path,
-                excel_path,
-                overwrite_nonempty_excel=bool(
-                    st.session_state.get("pkg_merge_kind_overwrite_excel", False)
-                ),
+    _hx1, _hx2, _hx3, _hx4 = st.columns([4.6, 1.25, 1.25, 1.45], gap="small")
+    with _hx1:
+        if _excel_download_err:
+            st.caption(f"Не удалось прочитать Excel для скачивания: {_excel_download_err}")
+        else:
+            st.caption(f"Excel: **{excel_path.name}**")
+    with _hx2:
+        if st.button(
+            "Загрузить обновлённый Excel",
+            use_container_width=True,
+            type="secondary",
+            help="Перечитать Excel с диска. Пустые «Вид» подставляются из SQLite; см. галочку «Загрузка Excel» в сайдбаре.",
+            key="reload_excel_header",
+        ):
+            apply_excel_file_reload_to_session()
+            st.rerun()
+    with _hx3:
+        if excel_download_bytes is not None:
+            st.download_button(
+                label="Скачать Excel",
+                data=excel_download_bytes,
+                file_name=excel_path.name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="pkg_download_xlsx_header",
+                help="Текущий файл с диска (путь в сайдбаре «Файл Excel»)",
             )
-            st.session_state.packaging_rows = loaded
-        except Exception as e:
-            st.error(f"Не удалось прочитать Excel: {e}")
-            st.stop()
+    with _hx4:
+        if db_path.is_file() and "packaging_rows" in st.session_state and st.session_state.packaging_rows:
+            import importlib
+
+            import packaging_print_planning as _pp_hdr
+            import packaging_profile_excel as _pprof_hdr
+
+            importlib.reload(_pprof_hdr)
+            _rows_hdr = sorted(
+                st.session_state.packaging_rows,
+                key=lambda x: int(x["excel_row"]),
+            )
+            _by_er_hdr = {int(r["excel_row"]): r for r in _rows_hdr}
+            _sp_hdr = _pp_hdr.SheetParams(
+                width_mm=float(st.session_state.get("pl_sheet_w", 700.0)),
+                height_mm=float(st.session_state.get("pl_sheet_h", 1000.0)),
+                margin_mm=float(st.session_state.get("pl_margin", 5.0)),
+                gap_mm=float(st.session_state.get("pl_gap_x", 2.0)),
+                gap_y_mm=float(st.session_state.get("pl_gap_y", 2.0)),
+            )
+            _fc_hdr = str(st.session_state.get("pl_profile_finish_pick") or "lac_wb")
+            _ry_hdr = int(st.session_state.get("pl_profile_report_year") or date.today().year)
+            _dc_hdr = str(st.session_state.get("pl_profile_doc_code") or "OM/ПУМ-192-01-373")
+            try:
+                _prof_hdr_bytes = _pprof_hdr.build_profile_workbook_bytes(
+                    db_path=db_path,
+                    size_key="all",
+                    size_key_display_override=f"Вся база ({len(_rows_hdr)} поз.)",
+                    group_rows=_rows_hdr,
+                    rows_by_er=_by_er_hdr,
+                    sheet_params=_sp_hdr,
+                    document_code=_dc_hdr,
+                    finish_code=_fc_hdr,
+                    logo_path=None,
+                    report_year=_ry_hdr,
+                )
+                st.download_button(
+                    label="Профиль Excel",
+                    data=_prof_hdr_bytes,
+                    file_name="packaging_profile_all.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="pkg_download_profile_header",
+                    help="Тот же шаблон, что в планировщике: шапка Balkan, таблица A–Z, анализ и график по **всем** строкам сессии. "
+                    "Год месяцев, отделка CG и Cod document — как в блоке экспорта на вкладке «Планировщик» (или значения по умолчанию). "
+                    "Параметры листа — из планировщика, если открывали, иначе 700×1000 мм.",
+                )
+            except Exception as _e_hdr_prof:
+                st.caption(f"Профиль: {_e_hdr_prof}")
+        elif not db_path.is_file():
+            st.caption("БД нет — профиль недоступен")
 
     rows: list[dict[str, Any]] = st.session_state.packaging_rows
 
@@ -4751,23 +6241,10 @@ def main() -> None:
         st.stop()
 
     if app_screen == "Планировщик":
-        render_planner_tab(rows, db_path, pdf_dir)
+        render_planner_tab(rows, db_path, pdf_dir, excel_path=excel_path)
         st.stop()
 
-    h_left, h_right = st.columns([4.5, 1.35], gap="small")
-    with h_left:
-        st.title("Макеты упаковки")
-    with h_right:
-        st.markdown('<div style="height:1.35rem"></div>', unsafe_allow_html=True)
-        if st.button(
-            "Загрузить обновлённый Excel",
-            use_container_width=True,
-            type="secondary",
-            help="Перечитать Excel с диска. Пустые «Вид» подставляются из SQLite; при расхождении с заполненным Excel см. галочку в сайдбаре «Загрузка Excel».",
-            key="reload_excel_main",
-        ):
-            apply_excel_file_reload_to_session()
-            st.rerun()
+    st.title("Макеты упаковки")
 
     search = st.text_input(
         "Поиск",
@@ -4819,20 +6296,33 @@ def main() -> None:
                 st.session_state.pkg_bucket_filter = bkey
                 st.rerun()
 
-    with st.expander("Эталон каталога (852 позиций)", expanded=False):
+    ref_total, ref_kind = load_makety_catalog_ref()
+    with st.expander(f"Эталон каталога ({ref_total} позиций)", expanded=False):
         st.caption(
-            "Сверка после «Сохранить в Excel и БД». Расхождение значит, что в данных ещё не те виды "
-            "или число строк отличается; правьте в таблице и сохраняйте снова."
+            "Сверка по текущей загрузке «Макеты». Расхождение — другие виды или число строк. "
+            f"Эталон хранится в **{MAKETY_CATALOG_REF_PATH.name}** (если файла нет — встроенные 852 позиции). "
+            "После полного импорта нажмите «Обновить эталон», чтобы дальше сравнивать с актуальной базой."
         )
-        total_ok = len(rows) == REF_CATALOG_TOTAL_ROWS
+        if st.button(
+            "Обновить эталон",
+            key="makety_catalog_ref_update",
+            help="Записать в JSON текущее число строк и разбивку по видам как новый эталон сверки.",
+        ):
+            try:
+                save_makety_catalog_ref(len(rows), stc)
+                st.toast(f"Эталон обновлён: {len(rows)} строк.", icon="✅")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Не удалось сохранить эталон: {e}")
+        total_ok = len(rows) == ref_total
         lines = [
             "| Показатель | Эталон | Сейчас |",
             "| :--- | ---: | ---: |",
-            f"| Всего строк | {REF_CATALOG_TOTAL_ROWS} | {len(rows)} |",
+            f"| Всего строк | {ref_total} | {len(rows)} |",
         ]
         all_ok = total_ok
         for lbl in ("Коробки", "Блистеры", "Пакеты", "Этикетки"):
-            exp = REF_CATALOG_KIND_STATS[lbl]
+            exp = ref_kind[lbl]
             cur = stc[lbl]
             ok = cur == exp
             all_ok = all_ok and ok
@@ -4847,6 +6337,8 @@ def main() -> None:
             )
 
     render_makety_cg_supplier_prices_by_kind(rows, db_path)
+    render_product_card_export(rows, pdf_dir, db_path)
+    render_packaging_color_analytics_tabs(rows, pdf_dir)
 
     if q:
         filtered = [r for r in rows if item_matches_text_query(r, q)]
@@ -4975,14 +6467,23 @@ def main() -> None:
     with st.expander("Ширина столбцов таблицы", expanded=False):
         st.caption(
             "Относительные доли ширины (сумма не важна — важны пропорции). "
-            "Действует на заголовок и все строки на странице."
+            "Действует на заголовок и все строки на странице. "
+            f"**Сохранить умолчание** записывает текущие ползунки в **{MAKETY_COL_WIDTHS_USER_PATH.name}** "
+            "— при следующем открытии приложения подставятся они. **По умолчанию** — встроенные заводские пропорции."
         )
-        _, reset_col = st.columns([3, 1])
-        with reset_col:
+        _bc1, _bc2, _bc3 = st.columns([2, 1, 1], gap="small")
+        with _bc2:
             if st.button("По умолчанию", key="pkg_col_w_reset", use_container_width=True):
                 for i, d in enumerate(MAKETY_COL_WIDTH_DEFAULTS):
                     st.session_state[f"pkg_col_w_{i}"] = float(d)
                 st.rerun()
+        with _bc3:
+            if st.button("Сохранить умолчание", key="pkg_col_w_save_user", use_container_width=True):
+                try:
+                    save_user_makety_col_widths(_makety_col_weights())
+                    st.success(f"Сохранено: {MAKETY_COL_WIDTHS_USER_PATH.name}")
+                except Exception as e:
+                    st.error(f"Не удалось сохранить: {e}")
         for row0 in range(0, len(MAKETY_COL_LABELS), 3):
             sc = st.columns(3)
             for j in range(3):
@@ -5098,6 +6599,7 @@ def main() -> None:
             use_custom_key = f"use_custom_{suffix}_{rk}"
             sel_key = f"kind_sel_{suffix}_{rk}"
             cust_key = f"kind_cust_{suffix}_{rk}"
+            lock_key = f"kind_lock_{suffix}_{rk}"
 
             opts = list(kind_options)
             if item["kind"] and item["kind"] not in opts:
@@ -5106,7 +6608,11 @@ def main() -> None:
             if use_custom_key not in st.session_state:
                 st.session_state[use_custom_key] = False
 
-            ic1, ic2 = st.columns([0.18, 1], gap="small")
+            _is_locked = bool(item.get("kind_locked"))
+            if lock_key not in st.session_state:
+                st.session_state[lock_key] = _is_locked
+
+            ic1, ic2, ic3 = st.columns([0.15, 1, 0.18], gap="small")
             with ic1:
                 st.checkbox(
                     "✎",
@@ -5138,6 +6644,32 @@ def main() -> None:
                         key=sel_key,
                         label_visibility="collapsed",
                     )
+            with ic3:
+                st.checkbox(
+                    "🔒" if st.session_state.get(lock_key) else "📌",
+                    key=lock_key,
+                    help=(
+                        "Закрепить вид — сохранить во все хранилища. "
+                        "Закреплённый вид не будет перезаписан при синхронизации из Excel."
+                    ),
+                )
+                if st.session_state.get(lock_key) != _is_locked:
+                    _new_lock = bool(st.session_state.get(lock_key))
+                    _cur_kind = item["kind"]
+                    item["kind_locked"] = 1 if _new_lock else 0
+                    if db_path and db_path.is_file():
+                        try:
+                            _lk_conn = pkg_db.connect(db_path)
+                            pkg_db.init_db(_lk_conn)
+                            pkg_db.set_kind_locked(_lk_conn, rk, _cur_kind, locked=_new_lock)
+                            _lk_conn.close()
+                        except Exception:
+                            pass
+                    if excel_path and excel_path.is_file():
+                        try:
+                            save_one_row_to_excel(excel_path, item, db_path)
+                        except Exception:
+                            pass
 
         with row[5]:
             mtime: float | None = None

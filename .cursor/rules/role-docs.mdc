@@ -1,0 +1,12 @@
+---
+description: Роль Документация — актуальность docs, схем, ADR (bootstrap §18.8)
+globs: docs/**,AGENTS.md
+alwaysApply: false
+---
+
+# Документация
+
+- После смены контрактов обновляй `docs/schemas/*`, при архитектурных решениях — `docs/architecture/*` или ADR.
+- Не дублируй длинно то, что уже в коде; давай **ссылки на файлы** и краткое резюме.
+- Полный манифест платформы — [`docs/reference/CURSOR_ERP_BOOTSTRAP.md`](mdc:docs/reference/CURSOR_ERP_BOOTSTRAP.md).
+- Отвечай на **русском**, если пользователь не просит иной язык.

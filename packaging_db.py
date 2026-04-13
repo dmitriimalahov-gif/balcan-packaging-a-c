@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,7 @@ _EXTRA_COLUMNS: tuple[tuple[str, str], ...] = (
     ("qty_per_sheet", "TEXT"),
     ("qty_per_year", "TEXT"),
     ("gmp_code", "TEXT"),
+    ("kind_locked", "INTEGER DEFAULT 0"),
 )
 
 
@@ -83,12 +85,77 @@ def _ensure_print_tariffs(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+DEFAULT_PRINT_FINISH_EXTRAS: list[dict[str, Any]] = [
+    {"code": "lac_uv", "label": "Лак UV", "extra_per_sheet": 0.0},
+    {"code": "lac_wb", "label": "Лак WB (водный)", "extra_per_sheet": 0.0},
+    {"code": "foil", "label": "Фольга (foil)", "extra_per_sheet": 0.0},
+    {"code": "pantone_plus1", "label": "Pantone +1 цвет", "extra_per_sheet": 0.0},
+]
+
+
+def _ensure_print_finish_extras(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS print_finish_extras (
+            code TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            extra_per_sheet REAL NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    cur = conn.execute("SELECT COUNT(*) AS c FROM print_finish_extras")
+    if int(cur.fetchone()["c"]) == 0:
+        now = datetime.now(timezone.utc).isoformat()
+        for row in DEFAULT_PRINT_FINISH_EXTRAS:
+            conn.execute(
+                """
+                INSERT INTO print_finish_extras (code, label, extra_per_sheet, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (row["code"], row["label"], float(row["extra_per_sheet"]), now),
+            )
+        conn.commit()
+
+
 def _ensure_stock_on_hand(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS stock_on_hand (
             gmp_code TEXT PRIMARY KEY,
             qty REAL NOT NULL,
+            source TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+
+
+def _ensure_packaging_stock(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS packaging_stock (
+            gmp_code TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            qty REAL NOT NULL DEFAULT 0,
+            source TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (gmp_code, kind)
+        )
+        """
+    )
+    conn.commit()
+
+
+def _ensure_substance_stock(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS substance_stock (
+            gmp_code TEXT PRIMARY KEY,
+            qty REAL NOT NULL DEFAULT 0,
+            unit TEXT NOT NULL DEFAULT 'кг',
             source TEXT,
             updated_at TEXT NOT NULL
         )
@@ -190,21 +257,86 @@ def init_db(conn: sqlite3.Connection) -> None:
     _ensure_packaging_monthly_qty(conn)
     _ensure_cutii_confirmations(conn)
     _ensure_print_tariffs(conn)
+    _ensure_print_finish_extras(conn)
     _ensure_knife_cache(conn)
     _ensure_stock_on_hand(conn)
+    _ensure_packaging_stock(conn)
+    _ensure_substance_stock(conn)
     _ensure_cg_knives(conn)
     _ensure_cg_prices(conn)
     _ensure_cg_mapping(conn)
 
 
 def extract_gmp_code(name: str, filename: str = "") -> str:
-    """Извлекает GMP-код вида ВУМ-169-01 из названия или имени файла."""
-    import re
-    for src in (name, filename):
-        m = re.search(r'\(([A-ZА-Яa-zа-я]{2,4}-\d{2,4}-\d{2})\)', src)
+    """
+    Извлекает GMP-код вида ВУМ-169-01 из названия и/или имени файла PDF.
+
+    Сначала ищет код в скобках: ``(ВУМ-169-01)`` в полном пути/названии.
+    Если не найдено — в **базовом имени файла** допускается шаблон без скобок: ``...ВУМ-169-01...``.
+    """
+    paren_pat = re.compile(r"\(([A-Za-zА-Яа-яЁё]{2,4}-\d{2,4}-\d{2})\)")
+    for src in (name or "", filename or ""):
+        if not src:
+            continue
+        m = paren_pat.search(src)
         if m:
             return m.group(1).upper()
+
+    base = Path(str(filename).strip()).name if filename else ""
+    if not base:
+        return ""
+    m = paren_pat.search(base)
+    if m:
+        return m.group(1).upper()
+    loose = re.compile(r"([A-Za-zА-Яа-яЁё]{2,4}-\d{2,4}-\d{2})")
+    m = loose.search(base)
+    if m:
+        return m.group(1).upper()
     return ""
+
+
+def sync_gmp_from_pdf_filenames(conn: sqlite3.Connection) -> tuple[int, int, int]:
+    """
+    Проставляет ``gmp_code`` в ``packaging_items`` по полю ``pdf_file`` (имя/путь PDF).
+
+    Использует только имя файла (как ``extract_gmp_code("", pdf_file)``).
+
+    Возвращает ``(число_обновлений, без_изменений_уже_совпадало, строк_без_кода_в_имени)``.
+    """
+    init_db(conn)
+    cur = conn.execute(
+        """
+        SELECT excel_row, pdf_file, gmp_code
+        FROM packaging_items
+        WHERE pdf_file IS NOT NULL AND TRIM(pdf_file) != ''
+        """
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    updated = 0
+    unchanged = 0
+    no_code_in_name = 0
+    for row in cur.fetchall():
+        er = int(row["excel_row"])
+        pdf = (row["pdf_file"] or "").strip()
+        old = (row["gmp_code"] or "").strip()
+        new = extract_gmp_code("", pdf)
+        if not new:
+            no_code_in_name += 1
+            continue
+        nu, ou = new.upper(), old.upper()
+        if nu == ou:
+            unchanged += 1
+            continue
+        conn.execute(
+            """
+            UPDATE packaging_items SET gmp_code = ?, updated_at = ?
+            WHERE excel_row = ?
+            """,
+            (new, now, er),
+        )
+        updated += 1
+    conn.commit()
+    return updated, unchanged, no_code_in_name
 
 
 def upsert_all(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
@@ -221,6 +353,7 @@ def upsert_all(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
             r.get("qty_per_sheet") or "",
             r.get("qty_per_year") or "",
             r.get("gmp_code") or extract_gmp_code(r.get("name") or "", r.get("file") or ""),
+            int(r.get("kind_locked") or 0),
             now,
         )
         for r in rows
@@ -230,19 +363,27 @@ def upsert_all(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
         INSERT INTO packaging_items (
             excel_row, name, size, kind, pdf_file,
             price, price_new, qty_per_sheet, qty_per_year,
-            gmp_code, updated_at
+            gmp_code, kind_locked, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(excel_row) DO UPDATE SET
             name = excluded.name,
             size = excluded.size,
-            kind = excluded.kind,
+            kind = CASE
+                WHEN packaging_items.kind_locked = 1 AND excluded.kind_locked = 0
+                THEN packaging_items.kind
+                ELSE excluded.kind
+            END,
             pdf_file = excluded.pdf_file,
             price = excluded.price,
             price_new = excluded.price_new,
             qty_per_sheet = excluded.qty_per_sheet,
             qty_per_year = excluded.qty_per_year,
             gmp_code = excluded.gmp_code,
+            kind_locked = CASE
+                WHEN excluded.kind_locked = 1 THEN 1
+                ELSE packaging_items.kind_locked
+            END,
             updated_at = excluded.updated_at
         """,
         payload,
@@ -255,7 +396,8 @@ def load_all(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     cur = conn.execute(
         """
         SELECT excel_row, name, size, kind, pdf_file,
-               price, price_new, qty_per_sheet, qty_per_year, gmp_code
+               price, price_new, qty_per_sheet, qty_per_year,
+               gmp_code, kind_locked, updated_at
         FROM packaging_items
         ORDER BY excel_row
         """
@@ -274,9 +416,40 @@ def load_all(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "qty_per_sheet": row["qty_per_sheet"] or "",
                 "qty_per_year": row["qty_per_year"] or "",
                 "gmp_code": row["gmp_code"] or "",
+                "kind_locked": int(row["kind_locked"] or 0),
+                "updated_at": row["updated_at"] or "",
             }
         )
     return out
+
+
+def set_kind_locked(
+    conn: sqlite3.Connection,
+    excel_row: int,
+    kind: str,
+    locked: bool = True,
+) -> None:
+    """Закрепляет (или открепляет) вид для строки, одновременно обновляя kind."""
+    init_db(conn)
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        UPDATE packaging_items
+        SET kind = ?, kind_locked = ?, updated_at = ?
+        WHERE excel_row = ?
+        """,
+        (kind, 1 if locked else 0, now, excel_row),
+    )
+    conn.commit()
+
+
+def load_kind_locked_set(conn: sqlite3.Connection) -> set[int]:
+    """Множество excel_row, у которых kind_locked = 1."""
+    init_db(conn)
+    cur = conn.execute(
+        "SELECT excel_row FROM packaging_items WHERE kind_locked = 1"
+    )
+    return {int(r["excel_row"]) for r in cur.fetchall()}
 
 
 def row_count(conn: sqlite3.Connection) -> int:
@@ -452,6 +625,43 @@ def save_tariffs(conn: sqlite3.Connection, tariffs: list[dict[str, Any]]) -> Non
                 int(t["max_sheets"]) if t.get("max_sheets") is not None else None,
                 float(t["price_per_sheet"]),
                 now,
+            ),
+        )
+    conn.commit()
+
+
+def load_print_finish_extras(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Доплаты к печати за 1 лист (лак UV/WB, фольга, Pantone+1)."""
+    _ensure_print_finish_extras(conn)
+    cur = conn.execute(
+        "SELECT code, label, extra_per_sheet FROM print_finish_extras ORDER BY code"
+    )
+    return [
+        {
+            "code": str(row["code"]),
+            "label": str(row["label"]),
+            "extra_per_sheet": float(row["extra_per_sheet"]),
+        }
+        for row in cur.fetchall()
+    ]
+
+
+def save_print_finish_extras(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    """Обновить суммы/подписи по коду (строки фиксированного набора)."""
+    _ensure_print_finish_extras(conn)
+    now = datetime.now(timezone.utc).isoformat()
+    for r in rows:
+        conn.execute(
+            """
+            UPDATE print_finish_extras
+            SET label = ?, extra_per_sheet = ?, updated_at = ?
+            WHERE code = ?
+            """,
+            (
+                str(r.get("label") or ""),
+                float(r.get("extra_per_sheet") or 0.0),
+                now,
+                str(r["code"]),
             ),
         )
     conn.commit()
@@ -1070,6 +1280,103 @@ def clear_cg_data(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM cg_prices")
     conn.execute("DELETE FROM cg_knives")
     conn.execute("DELETE FROM cg_mapping")
+    conn.commit()
+
+
+# --- Остатки упаковки (по GMP + kind) ---
+
+
+def load_packaging_stock(conn: sqlite3.Connection, gmp_code: str = "") -> dict[str, float]:
+    """Остатки упаковки. Если gmp_code задан — только для него. Ключ: ``gmp_code|kind``."""
+    _ensure_packaging_stock(conn)
+    if gmp_code:
+        cur = conn.execute(
+            "SELECT gmp_code, kind, qty FROM packaging_stock WHERE gmp_code = ? ORDER BY kind",
+            (gmp_code.strip().upper(),),
+        )
+    else:
+        cur = conn.execute("SELECT gmp_code, kind, qty FROM packaging_stock ORDER BY gmp_code, kind")
+    return {f"{r['gmp_code']}|{r['kind']}": float(r["qty"]) for r in cur.fetchall()}
+
+
+def load_packaging_stock_for_gmp(conn: sqlite3.Connection, gmp_code: str) -> dict[str, float]:
+    """Остатки упаковки для одного GMP: {kind: qty}."""
+    _ensure_packaging_stock(conn)
+    cur = conn.execute(
+        "SELECT kind, qty FROM packaging_stock WHERE gmp_code = ?",
+        (gmp_code.strip().upper(),),
+    )
+    return {r["kind"]: float(r["qty"]) for r in cur.fetchall()}
+
+
+def upsert_packaging_stock(
+    conn: sqlite3.Connection,
+    gmp_code: str,
+    kind: str,
+    qty: float,
+    source: str = "",
+) -> None:
+    _ensure_packaging_stock(conn)
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO packaging_stock (gmp_code, kind, qty, source, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(gmp_code, kind) DO UPDATE SET
+            qty = excluded.qty,
+            source = COALESCE(excluded.source, packaging_stock.source),
+            updated_at = excluded.updated_at
+        """,
+        (gmp_code.strip().upper(), kind.strip().lower(), qty, source or None, now),
+    )
+    conn.commit()
+
+
+# --- Остатки субстанции (препарат в кг/мл/г/л) ---
+
+
+SUBSTANCE_UNITS = ("кг", "г", "л", "мл")
+
+
+def load_substance_stock(conn: sqlite3.Connection, gmp_code: str = "") -> dict[str, dict[str, Any]]:
+    """Остатки субстанции. Ключ: gmp_code → {qty, unit, source}."""
+    _ensure_substance_stock(conn)
+    if gmp_code:
+        cur = conn.execute(
+            "SELECT gmp_code, qty, unit, source FROM substance_stock WHERE gmp_code = ?",
+            (gmp_code.strip().upper(),),
+        )
+    else:
+        cur = conn.execute("SELECT gmp_code, qty, unit, source FROM substance_stock ORDER BY gmp_code")
+    return {
+        r["gmp_code"]: {"qty": float(r["qty"]), "unit": r["unit"], "source": r["source"] or ""}
+        for r in cur.fetchall()
+    }
+
+
+def upsert_substance_stock(
+    conn: sqlite3.Connection,
+    gmp_code: str,
+    qty: float,
+    unit: str = "кг",
+    source: str = "",
+) -> None:
+    _ensure_substance_stock(conn)
+    if unit not in SUBSTANCE_UNITS:
+        unit = "кг"
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO substance_stock (gmp_code, qty, unit, source, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(gmp_code) DO UPDATE SET
+            qty = excluded.qty,
+            unit = excluded.unit,
+            source = COALESCE(excluded.source, substance_stock.source),
+            updated_at = excluded.updated_at
+        """,
+        (gmp_code.strip().upper(), qty, unit, source or None, now),
+    )
     conn.commit()
 
 

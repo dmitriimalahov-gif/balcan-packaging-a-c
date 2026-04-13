@@ -10,7 +10,7 @@ import csv
 import sys
 import re
 import unicodedata
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -94,13 +94,18 @@ def _cell_float(ws: Any, row: int, col: int) -> float | None:
         return None
 
 
-def _sum_months_2025(ws: Any, row: int) -> float:
-    s = 0.0
-    for c in range(4, 16):
-        x = _cell_float(ws, row, c)
-        if x is not None:
-            s += x
-    return s
+def _iter_cutii_month_header_columns(ws: Any, header_row: int = 2) -> list[tuple[int, int, int]]:
+    """
+    Строка заголовков cutii: ячейки с датой (первое число месяца) → (col_1based, year, month).
+
+    Если дат в шапке нет — вернуть [] (вызывающий подставит фолбэк 2025, колонки 4–15).
+    """
+    out: list[tuple[int, int, int]] = []
+    for c in range(1, 41):
+        v = ws.cell(header_row, c).value
+        if isinstance(v, date):
+            out.append((c, v.year, v.month))
+    return out
 
 
 def load_overrides(path: Path) -> dict[str, int]:
@@ -301,6 +306,50 @@ def apply_cutii_import(
         xwb.close()
 
 
+def import_cutii_matched_volumes_to_db(
+    cutii_path: Path,
+    packaging_rows: list[dict[str, Any]],
+    db_path: Path,
+    excel_path: Path,
+    *,
+    overrides_path: Path | None = None,
+    confirmations_path: Path | None = None,
+    confirmations_db_path: Path | None = None,
+    min_score: int = 50,
+    ambiguous_gap: int = 5,
+    fallback_pdf: bool = True,
+    extra_picks: dict[int, int] | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """
+    Читает cutii (.xlsx), сопоставляет строки (buc.) с коробками и записывает в SQLite
+    ``qty_per_year`` и ``packaging_monthly_qty`` (помесячно по заголовкам дат в файле).
+
+    Учитываются авто-совпадения, overrides CSV, подтверждения CSV и БД, опционально ``extra_picks``:
+    ``cutii_sheet_row → excel_row`` (как выбор в UI).
+
+    Возвращает ``(число_записанных_позиций, полный результат run_cutii_analysis)``.
+    """
+    ov = (overrides_path or DEFAULT_OVERRIDES).expanduser().resolve()
+    cf = (confirmations_path or DEFAULT_CONFIRMATIONS).expanduser().resolve()
+    res = run_cutii_analysis(
+        cutii_path.expanduser().resolve(),
+        packaging_rows,
+        ov,
+        cf,
+        no_confirmations=False,
+        min_score=min_score,
+        ambiguous_gap=ambiguous_gap,
+        fallback_pdf=fallback_pdf,
+        interactive=False,
+        confirmations_db_path=confirmations_db_path or db_path,
+    )
+    picks = dict(extra_picks or {})
+    merged = build_to_apply_with_ui_picks(res["to_apply"], res["pending"], picks, res["box_rows"])
+    if merged:
+        apply_cutii_import(merged, db_path, excel_path, res["source_tag"])
+    return len(merged), res
+
+
 def save_cutii_confirmations_csv(
     path: Path,
     entries: list[dict[str, Any]],
@@ -369,6 +418,10 @@ def run_cutii_analysis(
     ws = wb.active
     source_tag = cutii_path.name
 
+    month_header_specs = _iter_cutii_month_header_columns(ws, 2)
+    if not month_header_specs:
+        month_header_specs = [(c, 2025, m) for m, c in enumerate(range(4, 16), start=1)]
+
     report_rows: list[dict[str, Any]] = []
     to_apply: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
@@ -386,16 +439,22 @@ def run_cutii_analysis(
 
         cutii_name = str(name_cell).strip()
         qty_r = _cell_float(ws, row_idx, 18)
-        sum_m = _sum_months_2025(ws, row_idx)
-        qty_year = int(round(qty_r)) if qty_r is not None else int(round(sum_m))
 
         monthly: list[dict[str, Any]] = []
-        for m, c in enumerate(range(4, 16), start=1):
-            q = _cell_float(ws, row_idx, c)
-            monthly.append({"year": 2025, "month": m, "qty": float(q) if q is not None else 0.0})
-        q_p = _cell_float(ws, row_idx, 16)
-        if q_p is not None:
-            monthly.append({"year": 2026, "month": 1, "qty": float(q_p)})
+        for col, y, mo in month_header_specs:
+            q = _cell_float(ws, row_idx, col)
+            monthly.append({"year": y, "month": mo, "qty": float(q) if q is not None else 0.0})
+
+        years_present = {m["year"] for m in monthly}
+        if qty_r is not None:
+            qty_year = int(round(qty_r))
+        elif 2025 in years_present:
+            qty_year = int(round(sum(m["qty"] for m in monthly if m["year"] == 2025)))
+        elif years_present:
+            y0 = min(years_present)
+            qty_year = int(round(sum(m["qty"] for m in monthly if m["year"] == y0)))
+        else:
+            qty_year = 0
 
         matched: dict[str, Any] | None = None
         score = 0

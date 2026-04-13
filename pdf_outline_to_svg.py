@@ -45,6 +45,15 @@ DEFAULT_KNIFE_COLOR_TOLERANCE = 0.36
 # Часть PDF даёт тонкие векторные обводки.
 DEFAULT_KNIFE_MIN_WIDTH_PT = 0.18
 
+# Обводка почти на всю страницу — типичная внешняя рамка листа (crop для блистер/этикетка).
+_KNIFE_FRAME_AREA_RATIO = 0.90
+# Минимальная площадь контура для стратегии «этикетка» (отсев шума).
+_KNIFE_LABEL_MIN_AREA_RATIO = 0.005
+
+
+def _bbox_area_pt(b: tuple[float, float, float, float]) -> float:
+    return max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+
 
 def _hex_to_rgb01(h: str) -> tuple[float, float, float]:
     s = h.strip().lstrip("#")
@@ -461,6 +470,74 @@ def _build_outline_group_page_mm(
     return (group, r, page_w_mm, page_h_mm, bboxes, inner)
 
 
+def _knife_filtered_path_bboxes(
+    page: fitz.Page,
+    *,
+    skip_dashed: bool,
+    target_hex_colors: list[str] | None = None,
+    color_tolerance: float = DEFAULT_KNIFE_COLOR_TOLERANCE,
+    min_width_pt: float = DEFAULT_KNIFE_MIN_WIDTH_PT,
+    max_width_pt: float | None = None,
+    exclude_gray_auxiliary: bool = True,
+    gray_exclude_hex: str = "34302F",
+) -> list[tuple[float, float, float, float]]:
+    """Отдельные bbox каждой подходящей обводки (pt), те же фильтры, что у union."""
+    colors = target_hex_colors if target_hex_colors else list(_DEFAULT_TARGET_HEX)
+    targets = [_hex_to_rgb01(h) for h in colors]
+    r = page.rect
+    try:
+        drawings = page.get_drawings()
+    except Exception:
+        drawings = []
+    out: list[tuple[float, float, float, float]] = []
+    for d in drawings:
+        stroke = d.get("stroke")
+        if stroke is None:
+            stroke = d.get("color")
+        w_raw = d.get("width")
+        w_pt = float(w_raw) if w_raw is not None else 1.0
+        if w_pt < min_width_pt:
+            continue
+        if max_width_pt is not None and w_pt > max_width_pt:
+            continue
+        rgb = _parse_rgb01(stroke)
+        if rgb is None:
+            continue
+        if exclude_gray_auxiliary and _is_near_gray_auxiliary(rgb, ref_hex=gray_exclude_hex):
+            continue
+        if not _matches_any_target(rgb, targets, color_tolerance):
+            continue
+        if skip_dashed and _drawing_uses_dash_pattern(d):
+            continue
+        items = d.get("items") or []
+        d_attr = _path_d_from_items(items, r)
+        if not d_attr:
+            continue
+        bb: tuple[float, float, float, float] | None = None
+        dr = d.get("rect")
+        if dr is not None:
+            try:
+                bb = (float(dr.x0), float(dr.y0), float(dr.x1), float(dr.y1))
+            except Exception:
+                bb = None
+        ib = _bbox_pdf_from_items(items)
+        if ib is not None:
+            bb = _union_pdf_rects(bb, ib) if bb is not None else ib
+        elif bb is None:
+            continue
+        out.append(bb)
+    return out
+
+
+def _union_bbox_list(boxes: list[tuple[float, float, float, float]]) -> tuple[float, float, float, float] | None:
+    if not boxes:
+        return None
+    u = boxes[0]
+    for b in boxes[1:]:
+        u = _union_pdf_rects(u, b)
+    return u
+
+
 def _knife_bbox_union_pdf_points(
     page: fitz.Page,
     *,
@@ -475,58 +552,77 @@ def _knife_bbox_union_pdf_points(
     Объединённый bbox отфильтрованных обводок в координатах страницы PDF (pt).
     Те же критерии, что и у контура в ``_build_outline_group_page_mm`` (в т.ч. пунктир бегунков).
     """
-    colors = target_hex_colors if target_hex_colors else list(_DEFAULT_TARGET_HEX)
-    targets = [_hex_to_rgb01(h) for h in colors]
-    r = page.rect
-    try:
-        drawings = page.get_drawings()
-    except Exception:
-        drawings = []
+    kw = dict(
+        target_hex_colors=target_hex_colors,
+        color_tolerance=color_tolerance,
+        min_width_pt=min_width_pt,
+        max_width_pt=max_width_pt,
+        exclude_gray_auxiliary=exclude_gray_auxiliary,
+        gray_exclude_hex=gray_exclude_hex,
+    )
+    boxes = _knife_filtered_path_bboxes(page, skip_dashed=True, **kw)
+    if not boxes:
+        boxes = _knife_filtered_path_bboxes(page, skip_dashed=False, **kw)
+    return _union_bbox_list(boxes)
 
-    def _pass_union(skip_dashed: bool) -> tuple[float, float, float, float] | None:
-        union: tuple[float, float, float, float] | None = None
-        for d in drawings:
-            stroke = d.get("stroke")
-            if stroke is None:
-                stroke = d.get("color")
-            w_raw = d.get("width")
-            w_pt = float(w_raw) if w_raw is not None else 1.0
-            if w_pt < min_width_pt:
-                continue
-            if max_width_pt is not None and w_pt > max_width_pt:
-                continue
-            rgb = _parse_rgb01(stroke)
-            if rgb is None:
-                continue
-            if exclude_gray_auxiliary and _is_near_gray_auxiliary(rgb, ref_hex=gray_exclude_hex):
-                continue
-            if not _matches_any_target(rgb, targets, color_tolerance):
-                continue
-            if skip_dashed and _drawing_uses_dash_pattern(d):
-                continue
-            items = d.get("items") or []
-            d_attr = _path_d_from_items(items, r)
-            if not d_attr:
-                continue
-            bb: tuple[float, float, float, float] | None = None
-            dr = d.get("rect")
-            if dr is not None:
-                try:
-                    bb = (float(dr.x0), float(dr.y0), float(dr.x1), float(dr.y1))
-                except Exception:
-                    bb = None
-            ib = _bbox_pdf_from_items(items)
-            if ib is not None:
-                bb = _union_pdf_rects(bb, ib) if bb is not None else ib
-            elif bb is None:
-                continue
-            union = _union_pdf_rects(union, bb) if union is not None else bb
-        return union
 
-    u = _pass_union(True)
-    if u is None:
-        u = _pass_union(False)
-    return u
+def knife_bbox_layout_kind_pdf_points(
+    page: fitz.Page,
+    layout_kind: str,
+    *,
+    target_hex_colors: list[str] | None = None,
+    color_tolerance: float = DEFAULT_KNIFE_COLOR_TOLERANCE,
+    min_width_pt: float = DEFAULT_KNIFE_MIN_WIDTH_PT,
+    max_width_pt: float | None = None,
+    exclude_gray_auxiliary: bool = True,
+    gray_exclude_hex: str = "34302F",
+) -> tuple[float, float, float, float] | None:
+    """
+    Bbox для растра слота в зависимости от вида упаковки (как ``kind_bucket``):
+    box/pack — union без «рамки листа» при возможности; blister — самый крупный внутренний контур;
+    label — наименьший значимый контур; иначе как union всех обводок.
+    """
+    kw = dict(
+        target_hex_colors=target_hex_colors,
+        color_tolerance=color_tolerance,
+        min_width_pt=min_width_pt,
+        max_width_pt=max_width_pt,
+        exclude_gray_auxiliary=exclude_gray_auxiliary,
+        gray_exclude_hex=gray_exclude_hex,
+    )
+    boxes = _knife_filtered_path_bboxes(page, skip_dashed=True, **kw)
+    if not boxes:
+        boxes = _knife_filtered_path_bboxes(page, skip_dashed=False, **kw)
+    if not boxes:
+        return None
+    page_area = max(float(page.rect.width) * float(page.rect.height), 1e-9)
+
+    def _ratio(b: tuple[float, float, float, float]) -> float:
+        return _bbox_area_pt(b) / page_area
+
+    non_frame = [b for b in boxes if _ratio(b) <= _KNIFE_FRAME_AREA_RATIO]
+    lk = (layout_kind or "box").strip().lower()
+
+    def _union_fallback() -> tuple[float, float, float, float] | None:
+        u = _union_bbox_list(non_frame)
+        return u if u is not None else _union_bbox_list(boxes)
+
+    if lk in ("box", "pack"):
+        return _union_fallback()
+
+    if lk == "blister":
+        if non_frame:
+            return max(non_frame, key=_bbox_area_pt)
+        return _union_bbox_list(boxes)
+
+    if lk == "label":
+        min_area = _KNIFE_LABEL_MIN_AREA_RATIO * page_area
+        cand = [b for b in non_frame if _bbox_area_pt(b) >= min_area]
+        if cand:
+            return min(cand, key=_bbox_area_pt)
+        return _union_fallback()
+
+    return _union_fallback()
 
 
 def knife_bbox_union_pdf_points(

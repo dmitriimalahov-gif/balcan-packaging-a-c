@@ -1,0 +1,11 @@
+---
+description: FastAPI и модульные роутеры Python
+globs: api/**/*.py,modules/**/api/**/*.py,modules/**/*.py
+alwaysApply: false
+---
+
+# Backend API
+
+- Используй **типизированные** Pydantic-модели для запросов/ответов; документируй новые эндпоинты в [`docs/schemas/api-contracts.md`](mdc:docs/schemas/api-contracts.md).
+- Роутеры монтируй из `modules/*/api/router.py` в [`api/main.py`](mdc:api/main.py); избегай толстой логики внутри хендлеров — вызывай application-сервисы.
+- Ошибки возвращай в предсказуемом виде; для внутренних сценариев логируй с контекстом.

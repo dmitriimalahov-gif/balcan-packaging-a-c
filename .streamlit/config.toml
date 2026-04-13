@@ -1,0 +1,6 @@
+# Локальная конфигурация Streamlit для проекта a-c
+# maxMessageSize — максимальный размер одного сообщения по WebSocket (МБ).
+# Нужен для больших SVG/PDF и download_button (раскладка листа, превью блистеров и т.п.).
+
+[server]
+maxMessageSize = 1024

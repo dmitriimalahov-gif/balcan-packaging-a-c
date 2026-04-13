@@ -1,0 +1,15 @@
+Шаблон makety_v1.xlsx (первая строка = заголовки, как в коде импорта «Макеты»).
+
+Колонки:
+- excel_row — номер строки в мастер-Excel (целое >= 1)
+- name — наименование
+- size — размер
+- kind — вид упаковки
+- file — имя/путь PDF
+- price, price_new — текстовые поля цен (как в SQLite)
+- qty_per_sheet, qty_per_year — строки с числами
+- gmp_code — необязательно; если пусто, при commit подставится extract_gmp_code(name, file)
+
+JSON Schema (черновик): см. packaging_schemas.makety_row.MaketyImportRow.model_json_schema().
+
+Сборка файла: python scripts/build_import_templates.py

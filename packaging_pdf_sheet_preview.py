@@ -12,6 +12,7 @@ import fitz
 from pdf_outline_to_svg import (
     DEFAULT_KNIFE_COLOR_TOLERANCE,
     DEFAULT_KNIFE_MIN_WIDTH_PT,
+    knife_bbox_layout_kind_pdf_points,
     knife_bbox_union_pdf_points,
     open_pdf_document,
 )
@@ -95,11 +96,15 @@ def render_knife_bbox_fit_to_mm(
     dpi: float = 144.0,
     page_index: int = 0,
     transparent_bg: bool = False,
+    layout_kind: str | None = None,
     **outline_kwargs: Any,
 ) -> bytes | None:
     """
-    Первая страница PDF → PNG: только область union bbox контура ножа (те же фильтры, что у контура),
+    Первая страница PDF → PNG: только область bbox контура ножа (те же фильтры, что у контура),
     вписанная в slot_w_mm × slot_h_mm (contain). Если контура нет — ``None``.
+
+    ``layout_kind`` — как ``kind_bucket`` (box / blister / pack / label): стратегия выбора bbox;
+    ``None`` — прежнее поведение (union всех обводок).
 
     ``transparent_bg`` — как в :func:`render_first_page_fit_to_mm`.
     """
@@ -114,8 +119,7 @@ def render_knife_bbox_fit_to_mm(
         if doc.page_count < 1 or page_index < 0 or page_index >= doc.page_count:
             return None
         page = doc.load_page(page_index)
-        u = knife_bbox_union_pdf_points(
-            page,
+        _okw = dict(
             target_hex_colors=outline_kwargs.get("target_hex_colors"),
             color_tolerance=float(outline_kwargs.get("color_tolerance", DEFAULT_KNIFE_COLOR_TOLERANCE)),
             min_width_pt=float(outline_kwargs.get("min_width_pt", DEFAULT_KNIFE_MIN_WIDTH_PT)),
@@ -123,6 +127,10 @@ def render_knife_bbox_fit_to_mm(
             exclude_gray_auxiliary=bool(outline_kwargs.get("exclude_gray_auxiliary", True)),
             gray_exclude_hex=str(outline_kwargs.get("gray_exclude_hex", "34302F")),
         )
+        if layout_kind:
+            u = knife_bbox_layout_kind_pdf_points(page, str(layout_kind), **_okw)
+        else:
+            u = knife_bbox_union_pdf_points(page, **_okw)
         if u is None:
             return None
         x0, y0, x1, y1 = u

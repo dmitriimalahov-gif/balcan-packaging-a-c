@@ -1,0 +1,13 @@
+---
+description: Роль SQL/данные — схема Postgres, Alembic, SQLite packaging_db, витрины (bootstrap §18.5)
+globs: db/**,alembic/**,packaging_db.py,analytics/**,scripts/migrate*.py
+alwaysApply: false
+---
+
+# Data / SQL
+
+- Изменения схемы Postgres **только через Alembic**; имена индексов и ограничений осмысленные.
+- SQLite `packaging_db.py` — наследие; новые сущности по возможности в Postgres (`db/models.py`).
+- Представления и BI — [`analytics/views.sql`](mdc:analytics/views.sql), [`docs/schemas/db-models.md`](mdc:docs/schemas/db-models.md).
+- Согласуй с [`packaging-db.mdc`](mdc:.cursor/rules/packaging-db.mdc).
+- Отвечай на **русском**, если пользователь не просит иной язык.

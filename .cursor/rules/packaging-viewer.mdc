@@ -1,0 +1,11 @@
+---
+description: Правила для Streamlit-монолита packaging_viewer.py
+globs: packaging_viewer.py
+alwaysApply: false
+---
+
+# packaging_viewer.py
+
+- Не добавляй крупные блоки бизнес-логики: выноси в `modules/*/application` или существующие доменные модули (`packaging_print_planning`, `packaging_db` и т.д.), оставляя здесь виджеты и вызовы сервисов.
+- Новые экраны по возможности проектируй как **API + web**; Streamlit — временный или админ-слой ([`docs/STREAMLIT_AND_PRODUCTION.md`](mdc:docs/STREAMLIT_AND_PRODUCTION.md)).
+- Сохраняй обратную совместимость путей к БД и файлам для текущих пользователей.
